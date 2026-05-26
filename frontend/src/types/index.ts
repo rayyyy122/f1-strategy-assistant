@@ -54,6 +54,7 @@ export interface AgentOutput {
 }
 
 export type SSEEvent =
+  | { type: "session_meta"; session_id: string; is_new: boolean }
   | { type: "routing"; mode: string; message: string }
   | { type: "progress"; step: string; message: string }
   | { type: "data_card"; card_type: string; data: unknown }
@@ -65,7 +66,7 @@ export type SSEEvent =
   | { type: "agent_complete"; agent: string; output?: AgentOutput }
   | { type: "strategy_card"; strategy: StrategyData }
   | { type: "comparison_card"; comparison: ComparisonData }
-  | { type: "complete"; elapsed_s?: number }
+  | { type: "complete"; elapsed_s?: number; usage?: { input_tokens?: number; output_tokens?: number } }
   | { type: "error"; message: string };
 
 export type MessageRole = "user" | "system" | "agent";
@@ -83,6 +84,13 @@ export interface ComparisonData {
   trace_id?: string;
 }
 
+export interface ToolActivity {
+  tool: string;
+  params?: unknown;
+  result?: unknown;
+  status: "calling" | "done";
+}
+
 export interface ChatMessage {
   id: string;
   role: MessageRole;
@@ -91,6 +99,35 @@ export interface ChatMessage {
   thinking?: string;
   isStreaming?: boolean;
   dataCard?: { card_type: string; data: unknown };
+  strategy?: StrategyData;
+  comparison?: ComparisonData;
+  toolActivity?: ToolActivity[];
+}
+
+// ---- 会话相关 ----
+
+export interface SessionSummary {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+export interface SessionDetail {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  messages: StoredMessage[];
+}
+
+export interface StoredMessage {
+  role: "user" | "assistant" | "system";
+  content: string;
+  timestamp: string;
+  agent?: string;
+  data_cards?: { card_type: string; data: unknown }[];
   strategy?: StrategyData;
   comparison?: ComparisonData;
 }

@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+/* F1 主题配色 */
+@theme {
+  --color-f1-red: #e10600;
+  --color-f1-red-light: #ff1e0d;
+  --color-f1-red-dark: #b80500;
+  --color-f1-black: #15151e;
+  --color-f1-graphite: #1e1e26;
+}
+
+/* 全局样式 */
+html, body, #root {
+  height: 100%;
+  background: #0a0a0c;
+  color: #e4e4e7;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 滚动条美化 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* 选中文字 */
+::selection {
+  background: rgba(225, 6, 0, 0.35);
+  color: white;
+}
+
+/* Markdown 表格在深色主题下的视觉 */
+.markdown-body table {
+  width: 100%;
+}
+
+/* 流式打字光标动画 */
+@keyframes cursor-blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+.cursor-blink {
+  animation: cursor-blink 1s step-end infinite;
+}

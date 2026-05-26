@@ -45,7 +45,7 @@ export function ComparisonCard({ comparison }: { comparison: ComparisonData }) {
         <div className="grid grid-cols-2 gap-3 mb-3">
           <div className="bg-zinc-900/50 rounded p-2">
             <div className="text-zinc-500 text-xs mb-1">Agent 预测</div>
-            <div className="text-amber-400 text-xs">{String(prediction.recommended_strategy || prediction.predicted_position || "-")}</div>
+            <div className="text-red-400 text-xs">{String(prediction.recommended_strategy || prediction.predicted_position || "-")}</div>
           </div>
           <div className="bg-zinc-900/50 rounded p-2">
             <div className="text-zinc-500 text-xs mb-1">实际结果</div>

@@ -45,14 +45,9 @@ class BaseAgent:
         context: dict,
         event_queue: asyncio.Queue | None = None,
     ) -> AgentOutput:
-        """标准 Agent 循环（streaming + tool use）。
+        """标准 Agent 循环（streaming + tool use）。"""
+        loop = asyncio.get_running_loop()
 
-        1. 构建 messages
-        2. streaming 调用 API
-        3. 流式推送 text delta 到 event_queue
-        4. 处理 tool_calls → 执行工具 → 回填 → 循环
-        5. finish_reason == "stop" → 解析输出
-        """
         messages: list[dict] = [
             {"role": "system", "content": self.config.system_prompt},
             {"role": "user", "content": self._build_user_message(context)},
@@ -66,11 +61,12 @@ class BaseAgent:
                 "max_tokens": self.config.max_tokens,
                 "messages": messages,
                 "stream": True,
+                "stream_options": {"include_usage": True},
             }
             if tool_schemas:
                 kwargs["tools"] = tool_schemas
 
-            response = await asyncio.to_thread(self._call_api, kwargs, event_queue)
+            response = await asyncio.to_thread(self._call_api, kwargs, event_queue, loop)
 
             if response is None:
                 raise AgentError("API 调用返回空响应")
@@ -110,8 +106,21 @@ class BaseAgent:
             return None
         return [s["function"] for s in schemas]
 
-    def _call_api(self, kwargs: dict, event_queue: asyncio.Queue | None) -> dict | None:
-        """同步调用 DeepSeek API（streaming），推送事件到 event_queue。"""
+    def _call_api(self, kwargs: dict, event_queue: asyncio.Queue | None, loop: asyncio.AbstractEventLoop | None = None) -> dict | None:
+        """同步调用 DeepSeek API（streaming），通过 loop.call_soon_threadsafe 推送事件到 event_queue。"""
+        from ..harness.logger import token_tracker
+
+        def safe_put(item: dict):
+            """跨线程安全地往 asyncio.Queue 投递事件。"""
+            if event_queue is None or loop is None:
+                return
+            def _put():
+                try:
+                    event_queue.put_nowait(item)
+                except asyncio.QueueFull:
+                    pass
+            loop.call_soon_threadsafe(_put)
+
         stream = self.client.chat.completions.create(**kwargs)
 
         content_parts: list[str] = []
@@ -121,6 +130,14 @@ class BaseAgent:
 
         for chunk in stream:
             chunk_count += 1
+
+            # 末尾的 usage 块（include_usage=True 时）
+            if getattr(chunk, "usage", None):
+                token_tracker.record(
+                    input_tokens=getattr(chunk.usage, "prompt_tokens", 0) or 0,
+                    output_tokens=getattr(chunk.usage, "completion_tokens", 0) or 0,
+                )
+
             if not chunk.choices:
                 continue
 
@@ -134,18 +151,23 @@ class BaseAgent:
             if delta is None:
                 continue
 
+            # reasoning_content (deepseek-reasoner 模型)
+            reasoning_delta = getattr(delta, "reasoning_content", None)
+            if reasoning_delta:
+                safe_put({
+                    "type": "agent_thinking",
+                    "agent": self.config.name,
+                    "delta": reasoning_delta,
+                })
+
             # 文本 delta
             if delta.content:
                 content_parts.append(delta.content)
-                if event_queue:
-                    try:
-                        event_queue.put_nowait({
-                            "type": "agent_text",
-                            "agent": self.config.name,
-                            "delta": delta.content,
-                        })
-                    except asyncio.QueueFull:
-                        pass
+                safe_put({
+                    "type": "agent_text",
+                    "agent": self.config.name,
+                    "delta": delta.content,
+                })
 
             # 工具调用 delta
             if delta.tool_calls:

@@ -45,6 +45,11 @@ async def handle_prompt(
     event_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
     total_start = time.time()
 
+    # 快照 token tracker 起始值（用于本次请求的增量统计）
+    from .logger import token_tracker
+    start_input = token_tracker.total_input
+    start_output = token_tracker.total_output
+
     # ---- Step 0: 路由 ----
     intent = await route_intent(prompt, history)
     logger.info(f"Router → mode={intent.mode}, season={intent.season}, round={intent.round}")
@@ -78,9 +83,13 @@ async def handle_prompt(
 
     # ---- 最终事件 ----
     elapsed = round(time.time() - total_start, 1)
-    logger.info(f"完成，耗时 {elapsed}s")
+    usage = {
+        "input_tokens": token_tracker.total_input - start_input,
+        "output_tokens": token_tracker.total_output - start_output,
+    }
+    logger.info(f"完成，耗时 {elapsed}s, tokens={usage}")
 
-    yield {"type": "complete", "elapsed_s": elapsed}
+    yield {"type": "complete", "elapsed_s": elapsed, "usage": usage}
 
 
 async def _run_pre_race(
