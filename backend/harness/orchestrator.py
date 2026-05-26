@@ -55,21 +55,22 @@ async def handle_prompt(
     memory.working.intent = intent.model_dump()
 
     # ---- 根据 mode 分发 ----
+    # 使用 drain helper 在 Agent 执行时同步抽取 event_queue 的流式事件
     try:
         if intent.mode == "pre_race":
-            async for event in _run_pre_race(intent, prompt, event_queue, memory):
+            async for event in _drain_with(_run_pre_race(intent, prompt, event_queue, memory), event_queue):
                 yield event
 
         elif intent.mode == "post_race":
-            async for event in _run_post_race(intent, prompt, event_queue, memory):
+            async for event in _drain_with(_run_post_race(intent, prompt, event_queue, memory), event_queue):
                 yield event
 
         elif intent.mode == "follow_up":
-            async for event in _run_follow_up(intent, prompt, event_queue, memory):
+            async for event in _drain_with(_run_follow_up(intent, prompt, event_queue, memory), event_queue):
                 yield event
 
         else:
-            async for event in _run_quick(prompt, event_queue, memory):
+            async for event in _drain_with(_run_quick(prompt, event_queue, memory), event_queue):
                 yield event
     except Exception as e:
         logger.error(f"Agent 执行失败: {e}", exc_info=True)
@@ -311,6 +312,43 @@ async def _run_quick(prompt, event_queue, memory):
     output = await agent.run({"prompt": prompt}, event_queue)
     memory.working.set_agent_output("race_context", output)
     yield {"type": "agent_complete", "agent": "race_context", "output": output.data}
+
+
+_END_SENTINEL = {"__end__": True}
+
+
+async def _drain_with(inner_gen, event_queue: asyncio.Queue):
+    """并发消费 inner_gen 的 yield 和 event_queue 中的流式事件。
+
+    把 inner 改造成往同一个 queue 投递（与 BaseAgent 共用），
+    统一以 queue 为驱动，按时间顺序发到 SSE 流。
+    """
+    async def producer():
+        try:
+            async for ev in inner_gen:
+                await event_queue.put(ev)
+        finally:
+            await event_queue.put(_END_SENTINEL)
+
+    task = asyncio.create_task(producer())
+    try:
+        while True:
+            ev = await event_queue.get()
+            if ev is _END_SENTINEL:
+                # 把队列中残留事件全部排出
+                while not event_queue.empty():
+                    extra = event_queue.get_nowait()
+                    if extra is not _END_SENTINEL:
+                        yield extra
+                return
+            yield ev
+    finally:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, BaseException):
+                pass
 
 
 # ---- 辅助函数 ----
