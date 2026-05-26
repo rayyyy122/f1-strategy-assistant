@@ -1,6 +1,7 @@
 """Agent 编排器——根据 Intent 调度 Agent 团队，流式推送 SSE 事件。"""
 
 import asyncio
+import json
 import time
 from typing import AsyncGenerator
 
@@ -74,8 +75,13 @@ async def handle_prompt(
             async for event in _drain_with(_run_follow_up(intent, prompt, event_queue, memory), event_queue):
                 yield event
 
+        elif intent.mode == "track_info":
+            async for event in _drain_with(_run_quick(prompt, event_queue, memory, force_tool=True), event_queue):
+                yield event
+
         else:
-            async for event in _drain_with(_run_quick(prompt, event_queue, memory), event_queue):
+            # quick_question 或未知 mode：不强制工具
+            async for event in _drain_with(_run_quick(prompt, event_queue, memory, force_tool=False), event_queue):
                 yield event
     except Exception as e:
         logger.error(f"Agent 执行失败: {e}", exc_info=True)
@@ -120,11 +126,14 @@ async def _run_pre_race(
     yield {"type": "agent_start", "agent": "race_context"}
     race_agent = AGENT_FACTORIES["race_context"]()
     race_context = {
-        "task": f"分析 {season} 赛季第 {round_num} 站比赛",
+        "task": (
+            f"分析 {season} 赛季第 {round_num} 站比赛。"
+            "请以 JSON 输出（结构化模式），输出会被下游 Agent 解析。"
+        ),
         "race_data": race_data,
         "prompt": prompt,
     }
-    rc_output = await race_agent.run(race_context, event_queue)
+    rc_output = await race_agent.run(race_context, event_queue, force_first_tool_call=True)
     memory.working.set_agent_output("race_context", rc_output)
     yield {"type": "agent_complete", "agent": "race_context", "output": rc_output.data}
     logger.info(f"Race Context 完成")
@@ -202,6 +211,7 @@ async def _run_post_race(intent, prompt, event_queue, memory):
     """赛后复盘——加载实际结果，对比预测。"""
     season = intent.season
     round_num = intent.round
+    logger.info(f"_run_post_race 开始: season={season}, round={round_num}")
 
     if season is None or round_num is None:
         yield {"type": "error", "message": "请指定比赛。例如：'复盘2024摩纳哥大奖赛'"}
@@ -210,15 +220,23 @@ async def _run_post_race(intent, prompt, event_queue, memory):
     yield {"type": "progress", "step": "loading", "message": f"正在加载 {season} R{round_num} 实际比赛结果..."}
 
     # 加载实际结果
-    from ..data import fastf1_client
     from ..tools.strategy_tools import _load_actual_race_result
 
-    actual = await _load_actual_race_result(season, round_num)
+    try:
+        actual = await _load_actual_race_result(season, round_num)
+    except Exception as e:
+        logger.error(f"_load_actual_race_result 异常: {e}", exc_info=True)
+        yield {"type": "error", "message": f"加载比赛结果异常: {e}"}
+        return
+
     if "error" in actual:
+        logger.warning(f"加载比赛结果失败: {actual['error']}")
         yield {"type": "error", "message": actual["error"]}
         return
 
-    yield {"type": "progress", "step": "done", "message": "实际结果加载完成"}
+    results = actual.get("results", [])
+    logger.info(f"成功加载 {season} R{round_num} 比赛结果: {len(results)} 位车手")
+    yield {"type": "progress", "step": "done", "message": f"已加载 {len(results)} 位车手的成绩"}
 
     # 查找已有的预测轨迹
     from ..memory.trace_store import list_traces, load_trace
@@ -229,9 +247,11 @@ async def _run_post_race(intent, prompt, event_queue, memory):
         trace = load_trace(matching[0]["trace_id"])
         prediction = trace.get("final_prediction", {}) if trace else {}
         trace_id = matching[0]["trace_id"]
+        logger.info(f"找到历史预测: {trace_id}")
     else:
         prediction = {}
         trace_id = None
+        logger.info(f"未找到 {season} R{round_num} 的历史预测")
 
     # 构建对比数据
     comparison = {
@@ -251,6 +271,34 @@ async def _run_post_race(intent, prompt, event_queue, memory):
         comparison["trace_id"] = trace_id
 
     yield {"type": "comparison_card", "comparison": comparison}
+
+    # 生成文本总结（无论是否有预测都给用户一个文字回答）
+    yield {"type": "agent_start", "agent": "synthesis"}
+    summary_agent = AGENT_FACTORIES["synthesis"]()
+    if prediction:
+        task = (
+            f"用户复盘 {season} 赛季第 {round_num} 站比赛。\n\n"
+            f"已加载实际结果（前 5 名）:\n"
+            + "\n".join(f"- P{r['position']} {r['driver']}" for r in results[:5])
+            + "\n\n"
+            f"Agent 之前的预测:\n{json.dumps(prediction, ensure_ascii=False, indent=2)}\n\n"
+            "请简要复盘：预测中正确的部分、错误的部分、关键差异原因。用中文回答，200字以内。"
+        )
+    else:
+        task = (
+            f"用户复盘 {season} 赛季第 {round_num} 站比赛。\n\n"
+            f"实际结果（前 5 名）:\n"
+            + "\n".join(f"- P{r['position']} {r['driver']}" for r in results[:5])
+            + "\n\n"
+            "提示：系统中没有这场比赛的历史 Agent 预测可供对比。\n"
+            "请简要介绍这场比赛的实际结果亮点，并建议用户先进行赛前预测再来复盘。"
+            "用中文回答，200字以内。"
+        )
+    summary_context = {"task": task, "prompt": prompt}
+    summary_output = await summary_agent.run(summary_context, event_queue)
+    memory.working.set_agent_output("synthesis", summary_output)
+    yield {"type": "agent_complete", "agent": "synthesis", "output": summary_output.data}
+
     logger.info(f"Post-race 复盘完成: {season} R{round_num}")
 
 
@@ -314,11 +362,28 @@ async def _run_follow_up(intent, prompt, event_queue, memory):
     yield {"type": "strategy_card", "strategy": synth_output.data}
 
 
-async def _run_quick(prompt, event_queue, memory):
-    """快速回答——单 Agent。"""
+async def _run_quick(prompt, event_queue, memory, force_tool: bool = False):
+    """快速回答——单 Agent。
+
+    Args:
+        force_tool: True 表示问的是具体赛道（track_info），强制 Agent 先调用工具；
+                   False 表示通用 F1 知识问答（quick_question），Agent 自由决定是否调工具。
+    """
     yield {"type": "agent_start", "agent": "race_context"}
     agent = AGENT_FACTORIES["race_context"]()
-    output = await agent.run({"prompt": prompt}, event_queue)
+    if force_tool:
+        task = (
+            "用户在询问某条具体赛道。请按 IRON RULE 规则 A 先调用 get_circuit_profile 工具查询，"
+            "再基于工具返回的数据用清晰的中文 Markdown 回答（不要使用 JSON 格式）。"
+        )
+    else:
+        task = (
+            "用户在问通用 F1 知识。请按 IRON RULE 规则 B 直接回答，不要调用赛道工具。"
+            "用清晰的中文 Markdown 回答，可以用 ## 小标题、加粗、列表、引用等让答案有层次。"
+            "不要使用 JSON 格式。"
+        )
+    context = {"task": task, "prompt": prompt}
+    output = await agent.run(context, event_queue, force_first_tool_call=force_tool)
     memory.working.set_agent_output("race_context", output)
     yield {"type": "agent_complete", "agent": "race_context", "output": output.data}
 
@@ -331,11 +396,17 @@ async def _drain_with(inner_gen, event_queue: asyncio.Queue):
 
     把 inner 改造成往同一个 queue 投递（与 BaseAgent 共用），
     统一以 queue 为驱动，按时间顺序发到 SSE 流。
+    任何 inner 抛出的异常会在主循环中重新抛出，不再静默吞掉。
     """
+    producer_exc: list[BaseException] = []
+
     async def producer():
         try:
             async for ev in inner_gen:
                 await event_queue.put(ev)
+        except BaseException as e:
+            producer_exc.append(e)
+            logger.error(f"_drain_with producer 异常: {e}", exc_info=True)
         finally:
             await event_queue.put(_END_SENTINEL)
 
@@ -349,6 +420,9 @@ async def _drain_with(inner_gen, event_queue: asyncio.Queue):
                     extra = event_queue.get_nowait()
                     if extra is not _END_SENTINEL:
                         yield extra
+                # 如果 producer 抛过异常，重新抛出
+                if producer_exc:
+                    raise producer_exc[0]
                 return
             yield ev
     finally:

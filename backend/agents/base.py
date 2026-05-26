@@ -31,6 +31,8 @@ class AgentConfig:
     model: str = "deepseek-chat"
     max_tokens: int = 8192
     tools: list[str] = field(default_factory=list)
+    # 强制首次 LLM 调用必须使用工具（防止 LLM 跳过工具直接幻觉）
+    force_first_tool_call: bool = False
 
 
 class BaseAgent:
@@ -44,9 +46,20 @@ class BaseAgent:
         self,
         context: dict,
         event_queue: asyncio.Queue | None = None,
+        force_first_tool_call: bool | None = None,
     ) -> AgentOutput:
-        """标准 Agent 循环（streaming + tool use）。"""
+        """标准 Agent 循环（streaming + tool use）。
+
+        Args:
+            force_first_tool_call: 覆盖 config 默认值。True 时强制首轮必须调用工具。
+                None 时使用 config.force_first_tool_call。
+        """
         loop = asyncio.get_running_loop()
+        force_tool = (
+            force_first_tool_call
+            if force_first_tool_call is not None
+            else self.config.force_first_tool_call
+        )
 
         messages: list[dict] = [
             {"role": "system", "content": self.config.system_prompt},
@@ -54,8 +67,10 @@ class BaseAgent:
         ]
 
         tool_schemas = self._get_tool_schemas()
+        iteration = 0
 
         while True:
+            iteration += 1
             kwargs = {
                 "model": self.config.model,
                 "max_tokens": self.config.max_tokens,
@@ -65,6 +80,9 @@ class BaseAgent:
             }
             if tool_schemas:
                 kwargs["tools"] = tool_schemas
+                # 强制首轮必须调用工具（防幻觉）
+                if iteration == 1 and force_tool:
+                    kwargs["tool_choice"] = "required"
 
             response = await asyncio.to_thread(self._call_api, kwargs, event_queue, loop)
 
@@ -83,6 +101,7 @@ class BaseAgent:
 
             if finish_reason == "stop":
                 data = self._parse_structured_output(content)
+                logger.info(f"Agent [{self.config.name}] OUTPUT:\n----\n{content}\n----")
                 return AgentOutput(
                     agent_name=self.config.name,
                     data=data,
@@ -218,6 +237,8 @@ class BaseAgent:
             except json.JSONDecodeError:
                 args = {}
 
+            logger.info(f"Agent [{self.config.name}] TOOL CALL: {tool_name}({json.dumps(args, ensure_ascii=False)})")
+
             # 推送 tool_call 事件
             if event_queue:
                 try:
@@ -237,6 +258,14 @@ class BaseAgent:
                     result = await result
             except ValueError as e:
                 result = f"Error: {e}"
+
+            try:
+                result_str = json.dumps(result, ensure_ascii=False, default=str)
+            except Exception:
+                result_str = str(result)
+            if len(result_str) > 500:
+                result_str = result_str[:500] + f"... [+{len(result_str)-500} chars]"
+            logger.info(f"Agent [{self.config.name}] TOOL RESULT [{tool_name}]: {result_str}")
 
             # 推送 tool_result 事件
             if event_queue:
@@ -263,14 +292,21 @@ class BaseAgent:
         if "race_context" in context:
             parts.append(f"## 比赛信息\n{json.dumps(context['race_context'], ensure_ascii=False, indent=2)}")
 
+        if "race_data" in context:
+            parts.append(f"## 比赛数据\n{json.dumps(context['race_data'], ensure_ascii=False, indent=2, default=str)}")
+
         if "upstream_outputs" in context:
             for name, output in context["upstream_outputs"].items():
                 if hasattr(output, "data"):
                     output = output.data
                 parts.append(f"## {name} 输出\n{json.dumps(output, ensure_ascii=False, indent=2)}")
 
+        # 用户原始问题 — 始终添加（如果有）
+        if "prompt" in context and context["prompt"]:
+            parts.append(f"## 用户原始问题\n{context['prompt']}")
+
         if not parts:
-            return context.get("prompt", "请开始分析。")
+            return "请开始分析。"
 
         return "\n\n".join(parts)
 

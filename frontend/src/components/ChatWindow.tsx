@@ -24,13 +24,20 @@ export function ChatWindow({ sessionId, onSessionCreated, onChatComplete }: Chat
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // 加载历史
+  // 跟踪 ChatWindow 已知的 sessionId（避免 session_meta 触发的 prop 变化重新加载历史）
+  const knownSessionIdRef = useRef<string | null>(null);
+
+  // 加载历史（仅外部切换，如 Sidebar 点击；本会话流式创建的 sessionId 跳过）
   useEffect(() => {
+    if (sessionId === knownSessionIdRef.current) return;
+
     if (!sessionId) {
+      knownSessionIdRef.current = null;
       setMessages([]);
       setLastUsage(null);
       return;
     }
+    knownSessionIdRef.current = sessionId;
     let mounted = true;
     setLoadingHistory(true);
     getSession(sessionId)
@@ -50,9 +57,14 @@ export function ChatWindow({ sessionId, onSessionCreated, onChatComplete }: Chat
     };
   }, [sessionId]);
 
-  // 滚动到底部
+  // 滚动到底部（只滚动消息列表容器，不影响外层布局）
   const scrollToBottom = useCallback((smooth = true) => {
-    bottomRef.current?.scrollIntoView({ behavior: smooth ? "smooth" : "auto" });
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({
+      top: el.scrollHeight,
+      behavior: smooth ? "smooth" : "auto",
+    });
   }, []);
 
   // 监听滚动位置
@@ -136,7 +148,11 @@ export function ChatWindow({ sessionId, onSessionCreated, onChatComplete }: Chat
   const handleEvent = (event: SSEEvent) => {
     switch (event.type) {
       case "session_meta":
-        if (event.is_new && onSessionCreated) onSessionCreated(event.session_id);
+        if (event.is_new) {
+          // 先标记 ref，避免 prop 变化触发的 useEffect 重载历史
+          knownSessionIdRef.current = event.session_id;
+          if (onSessionCreated) onSessionCreated(event.session_id);
+        }
         break;
 
       case "routing":
@@ -285,18 +301,20 @@ export function ChatWindow({ sessionId, onSessionCreated, onChatComplete }: Chat
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto px-4 py-4 space-y-1"
+        className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4"
       >
-        {loadingHistory && (
-          <div className="flex items-center justify-center h-full text-zinc-600 text-sm">
-            加载历史消息...
-          </div>
-        )}
-        {showEmpty && <SuggestedPrompts onSelect={sendPrompt} />}
-        {!loadingHistory && messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
-        ))}
-        <div ref={bottomRef} />
+        <div className="max-w-3xl mx-auto space-y-1">
+          {loadingHistory && (
+            <div className="flex items-center justify-center h-full text-zinc-600 text-sm">
+              加载历史消息...
+            </div>
+          )}
+          {showEmpty && <SuggestedPrompts onSelect={sendPrompt} />}
+          {!loadingHistory && messages.map((msg) => (
+            <MessageBubble key={msg.id} message={msg} />
+          ))}
+          <div ref={bottomRef} />
+        </div>
       </div>
 
       {/* 浮动"回到底部"按钮 */}
@@ -315,24 +333,26 @@ export function ChatWindow({ sessionId, onSessionCreated, onChatComplete }: Chat
 
       {/* 工具栏：重新生成 + token 用量 */}
       {(canRegenerate || lastUsage) && !showEmpty && (
-        <div className="border-t border-zinc-900 px-4 py-1.5 bg-zinc-950 flex items-center justify-between text-xs">
-          <div className="flex items-center gap-3">
-            {canRegenerate && (
-              <button
-                onClick={handleRegenerate}
-                className="flex items-center gap-1 text-zinc-500 hover:text-zinc-200 transition-colors"
-                title="重新生成最后一次回复"
-              >
-                <RotateCcw size={12} />
-                <span>重新生成</span>
-              </button>
+        <div className="border-t border-zinc-900 py-1.5 bg-zinc-950 text-xs">
+          <div className="max-w-3xl mx-auto px-4 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              {canRegenerate && (
+                <button
+                  onClick={handleRegenerate}
+                  className="flex items-center gap-1 text-zinc-500 hover:text-zinc-200 transition-colors"
+                  title="重新生成最后一次回复"
+                >
+                  <RotateCcw size={12} />
+                  <span>重新生成</span>
+                </button>
+              )}
+            </div>
+            {lastUsage && (
+              <span className="text-zinc-600">
+                Tokens · 输入 {lastUsage.in.toLocaleString()} / 输出 {lastUsage.out.toLocaleString()}
+              </span>
             )}
           </div>
-          {lastUsage && (
-            <span className="text-zinc-600">
-              Tokens · 输入 {lastUsage.in.toLocaleString()} / 输出 {lastUsage.out.toLocaleString()}
-            </span>
-          )}
         </div>
       )}
 

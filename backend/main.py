@@ -183,6 +183,18 @@ async def chat(request: ChatRequest):
                 extra["strategy"] = final_strategy
             if final_comparison:
                 extra["comparison"] = final_comparison
+
+            # 日志记录用户实际看到的完整回复内容
+            logger.info(
+                f"=== USER-FACING RESPONSE (session={session_id}) ===\n"
+                f"PROMPT: {request.prompt}\n"
+                f"--- ASSISTANT TEXT ({len(assistant_content)} chars) ---\n"
+                f"{assistant_content}\n"
+                f"--- EXTRAS ---\n"
+                f"data_cards: {len(data_cards)}, strategy: {bool(final_strategy)}, comparison: {bool(final_comparison)}\n"
+                f"=== END RESPONSE ==="
+            )
+
             try:
                 session_store.append_message(
                     session_id,
