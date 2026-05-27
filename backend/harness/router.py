@@ -8,6 +8,7 @@ from ..llm_client import get_client
 from ..models.schemas import Intent
 from ..config import LLM_MODEL
 from .time_context import current_time_prefix, current_season
+from .retry import retry_async
 
 logger = logging.getLogger(__name__)
 
@@ -64,11 +65,18 @@ async def route_intent(prompt: str, history: list[dict] | None = None) -> Intent
     messages.append({"role": "user", "content": prompt})
 
     try:
-        response = await asyncio.to_thread(
-            client.chat.completions.create,
-            model=LLM_MODEL,
-            max_tokens=128,
-            messages=messages,
+        response = await retry_async(
+            lambda: asyncio.to_thread(
+                client.chat.completions.create,
+                model=LLM_MODEL,
+                max_tokens=128,
+                messages=messages,
+            ),
+            name="router_llm",
+            attempts=2,
+            base_delay=0.5,
+            max_delay=2.0,
+            timeout=30.0,
         )
         text = response.choices[0].message.content or ""
     except Exception as e:

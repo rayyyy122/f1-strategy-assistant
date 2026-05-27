@@ -10,6 +10,7 @@ from openai import OpenAI
 from ..llm_client import get_client
 from ..tools.registry import registry
 from ..harness.time_context import current_time_prefix
+from ..harness.retry import retry_async
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,14 @@ class BaseAgent:
                 if iteration == 1 and force_tool:
                     kwargs["tool_choice"] = "required"
 
-            response = await asyncio.to_thread(self._call_api, kwargs, event_queue, loop)
+            response = await retry_async(
+                lambda: asyncio.to_thread(self._call_api, kwargs, event_queue, loop),
+                name=f"agent[{self.config.name}].iter{iteration}",
+                attempts=3,
+                base_delay=1.0,
+                max_delay=8.0,
+                timeout=120.0,
+            )
 
             if response is None:
                 raise AgentError("API 调用返回空响应")
@@ -155,67 +163,79 @@ class BaseAgent:
                     pass
             loop.call_soon_threadsafe(_put)
 
-        stream = self.client.chat.completions.create(**kwargs)
-
         content_parts: list[str] = []
         tool_calls_map: dict[int, dict] = {}
         finish_reason = "stop"
         chunk_count = 0
+        streamed_to_user = False  # 一旦给前端投递过文本/思考 token，重试会重复输出 → 不能重试
 
-        for chunk in stream:
-            chunk_count += 1
+        try:
+            stream = self.client.chat.completions.create(**kwargs)
 
-            # 末尾的 usage 块（include_usage=True 时）
-            if getattr(chunk, "usage", None):
-                token_tracker.record(
-                    input_tokens=getattr(chunk.usage, "prompt_tokens", 0) or 0,
-                    output_tokens=getattr(chunk.usage, "completion_tokens", 0) or 0,
-                )
+            for chunk in stream:
+                chunk_count += 1
 
-            if not chunk.choices:
-                continue
+                # 末尾的 usage 块（include_usage=True 时）
+                if getattr(chunk, "usage", None):
+                    token_tracker.record(
+                        input_tokens=getattr(chunk.usage, "prompt_tokens", 0) or 0,
+                        output_tokens=getattr(chunk.usage, "completion_tokens", 0) or 0,
+                    )
 
-            choice = chunk.choices[0]
+                if not chunk.choices:
+                    continue
 
-            # 检查 finish_reason
-            if choice.finish_reason:
-                finish_reason = choice.finish_reason
+                choice = chunk.choices[0]
 
-            delta = choice.delta
-            if delta is None:
-                continue
+                # 检查 finish_reason
+                if choice.finish_reason:
+                    finish_reason = choice.finish_reason
 
-            # reasoning_content (deepseek-reasoner 模型)
-            reasoning_delta = getattr(delta, "reasoning_content", None)
-            if reasoning_delta:
-                safe_put({
-                    "type": "agent_thinking",
-                    "agent": self.config.name,
-                    "delta": reasoning_delta,
-                })
+                delta = choice.delta
+                if delta is None:
+                    continue
 
-            # 文本 delta
-            if delta.content:
-                content_parts.append(delta.content)
-                safe_put({
-                    "type": "agent_text",
-                    "agent": self.config.name,
-                    "delta": delta.content,
-                })
+                # reasoning_content (deepseek-reasoner 模型)
+                reasoning_delta = getattr(delta, "reasoning_content", None)
+                if reasoning_delta:
+                    safe_put({
+                        "type": "agent_thinking",
+                        "agent": self.config.name,
+                        "delta": reasoning_delta,
+                    })
+                    streamed_to_user = True
 
-            # 工具调用 delta
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    idx = tc.index if tc.index is not None else 0
-                    if idx not in tool_calls_map:
-                        tool_calls_map[idx] = {"id": tc.id or "", "function": {"name": "", "arguments": ""}}
-                    if tc.id:
-                        tool_calls_map[idx]["id"] = tc.id
-                    if tc.function:
-                        if tc.function.name:
-                            tool_calls_map[idx]["function"]["name"] += tc.function.name
-                        if tc.function.arguments:
-                            tool_calls_map[idx]["function"]["arguments"] += tc.function.arguments
+                # 文本 delta
+                if delta.content:
+                    content_parts.append(delta.content)
+                    safe_put({
+                        "type": "agent_text",
+                        "agent": self.config.name,
+                        "delta": delta.content,
+                    })
+                    streamed_to_user = True
+
+                # 工具调用 delta
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index if tc.index is not None else 0
+                        if idx not in tool_calls_map:
+                            tool_calls_map[idx] = {"id": tc.id or "", "function": {"name": "", "arguments": ""}}
+                        if tc.id:
+                            tool_calls_map[idx]["id"] = tc.id
+                        if tc.function:
+                            if tc.function.name:
+                                tool_calls_map[idx]["function"]["name"] += tc.function.name
+                            if tc.function.arguments:
+                                tool_calls_map[idx]["function"]["arguments"] += tc.function.arguments
+        except BaseException as e:
+            # 标记给前端投递过的失败，避免被 retry 重新跑一遍导致重复 token
+            if streamed_to_user:
+                try:
+                    setattr(e, "_streamed_partial", True)
+                except (AttributeError, TypeError):
+                    pass
+            raise
 
         content = "".join(content_parts)
         logger.info(f"Agent [{self.config.name}] finish={finish_reason}, chunks={chunk_count}, content_len={len(content)}, tool_calls={len(tool_calls_map)}")

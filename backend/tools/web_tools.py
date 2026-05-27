@@ -12,6 +12,7 @@ import logging
 import httpx
 
 from .registry import registry
+from ..harness.retry import retry_async
 
 logger = logging.getLogger(__name__)
 
@@ -53,13 +54,20 @@ async def _web_search(query: str, max_results: int = 5) -> dict:
         return {"found": False, "error": "query is empty"}
 
     try:
-        raw = await asyncio.wait_for(
-            asyncio.to_thread(_ddgs_search_sync, query, max_results),
+        raw = await retry_async(
+            lambda: asyncio.to_thread(_ddgs_search_sync, query, max_results),
+            name=f"ddgs[{query[:30]}]",
+            attempts=2,
+            base_delay=0.3,
+            max_delay=1.0,
             timeout=_TIMEOUT_SEC,
+            # ddgs 的内部异常类型五花八门（rate limit / 解析失败 / network），统一允许重试一次，
+            # 但跳过被取消的情况
+            should_retry=lambda e: not isinstance(e, asyncio.CancelledError),
         )
     except asyncio.TimeoutError:
         return {"found": False, "query": query, "error": f"timed out after {_TIMEOUT_SEC}s"}
-    except Exception as e:  # noqa: BLE001 — ddgs has many internal exceptions (rate limit, network…)
+    except Exception as e:  # noqa: BLE001
         logger.warning("web_search failed for query=%r: %s", query, e)
         return {"found": False, "query": query, "error": str(e)}
 
