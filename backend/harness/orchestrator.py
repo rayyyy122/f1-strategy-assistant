@@ -76,12 +76,12 @@ async def handle_prompt(
                 yield event
 
         elif intent.mode == "track_info":
-            async for event in _drain_with(_run_quick(prompt, event_queue, memory, force_tool=True), event_queue):
+            async for event in _drain_with(_run_quick(prompt, event_queue, memory, force_tool=True, history=history), event_queue):
                 yield event
 
         else:
             # quick_question 或未知 mode：不强制工具
-            async for event in _drain_with(_run_quick(prompt, event_queue, memory, force_tool=False), event_queue):
+            async for event in _drain_with(_run_quick(prompt, event_queue, memory, force_tool=False, history=history), event_queue):
                 yield event
     except Exception as e:
         logger.error(f"Agent 执行失败: {e}", exc_info=True)
@@ -362,12 +362,13 @@ async def _run_follow_up(intent, prompt, event_queue, memory):
     yield {"type": "strategy_card", "strategy": synth_output.data}
 
 
-async def _run_quick(prompt, event_queue, memory, force_tool: bool = False):
+async def _run_quick(prompt, event_queue, memory, force_tool: bool = False, history: list[dict] | None = None):
     """快速回答——单 Agent。
 
     Args:
         force_tool: True 表示问的是具体赛道（track_info），强制 Agent 先调用工具；
                    False 表示通用 F1 知识问答（quick_question），Agent 自由决定是否调工具。
+        history: 前端传入的最近 N 轮对话历史，用于保持上下文（如"帮我搜索"指代上一轮话题）。
     """
     yield {"type": "agent_start", "agent": "race_context"}
     agent = AGENT_FACTORIES["race_context"]()
@@ -378,11 +379,13 @@ async def _run_quick(prompt, event_queue, memory, force_tool: bool = False):
         )
     else:
         task = (
-            "用户在问通用 F1 知识。请按 IRON RULE 规则 B 直接回答，不要调用赛道工具。"
-            "用清晰的中文 Markdown 回答，可以用 ## 小标题、加粗、列表、引用等让答案有层次。"
-            "不要使用 JSON 格式。"
+            "用户在问 F1 知识。按 IRON RULE 判断："
+            "定义/规则/概念 → 规则 B 直接答；"
+            "「当前/最新/下一场/本赛季」等时效性问题 → 规则 C 直接调 web_search，不要问用户授权；"
+            "如果之前轮对话已经提到具体话题且用户说「帮我搜索」「就搜这个」，请结合上文话题构造搜索词，不要要求用户重复说明。"
+            "用清晰的中文 Markdown 回答，不要使用 JSON 格式。"
         )
-    context = {"task": task, "prompt": prompt}
+    context = {"task": task, "prompt": prompt, "history": history or []}
     output = await agent.run(context, event_queue, force_first_tool_call=force_tool)
     memory.working.set_agent_output("race_context", output)
     yield {"type": "agent_complete", "agent": "race_context", "output": output.data}

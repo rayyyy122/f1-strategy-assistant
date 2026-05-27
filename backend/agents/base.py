@@ -64,8 +64,21 @@ class BaseAgent:
 
         messages: list[dict] = [
             {"role": "system", "content": current_time_prefix() + "\n\n" + self.config.system_prompt},
-            {"role": "user", "content": self._build_user_message(context)},
         ]
+
+        # 注入对话历史（前端传入，已限制 last 10 条）。role="agent" 转换为 OpenAI 协议的 "assistant"。
+        for h in context.get("history", []) or []:
+            role = h.get("role", "user")
+            if role == "agent":
+                role = "assistant"
+            if role not in ("user", "assistant"):
+                continue
+            content = str(h.get("content", "")).strip()
+            if not content:
+                continue
+            messages.append({"role": role, "content": content})
+
+        messages.append({"role": "user", "content": self._build_user_message(context)})
 
         tool_schemas = self._get_tool_schemas()
         iteration = 0
