@@ -9,6 +9,7 @@ from openai import OpenAI
 
 from ..llm_client import get_client
 from ..tools.registry import registry
+from ..harness.time_context import current_time_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ class BaseAgent:
         )
 
         messages: list[dict] = [
-            {"role": "system", "content": self.config.system_prompt},
+            {"role": "system", "content": current_time_prefix() + "\n\n" + self.config.system_prompt},
             {"role": "user", "content": self._build_user_message(context)},
         ]
 
@@ -109,8 +110,8 @@ class BaseAgent:
                 )
 
             elif finish_reason == "tool_calls":
-                tool_results = await self._execute_tools(tool_calls, event_queue)
-                messages.append({"role": "tool", "content": json.dumps(tool_results, ensure_ascii=False, default=str)})
+                tool_messages = await self._execute_tools(tool_calls, event_queue)
+                messages.extend(tool_messages)
 
             elif finish_reason == "length":
                 raise AgentError("max_tokens 超限，需要增大 max_tokens")
@@ -119,11 +120,12 @@ class BaseAgent:
                 raise AgentError(f"未知 finish_reason: {finish_reason}")
 
     def _get_tool_schemas(self) -> list[dict] | None:
-        """获取本 Agent 可用工具的 OpenAI function-calling schema。"""
+        """获取本 Agent 可用工具的 OpenAI function-calling schema。
+
+        registry 已经返回完整 {type, function} 信封，直接透传给 DeepSeek API。
+        """
         schemas = registry.get_schemas_for_agent(self.config.name)
-        if not schemas:
-            return None
-        return [s["function"] for s in schemas]
+        return schemas or None
 
     def _call_api(self, kwargs: dict, event_queue: asyncio.Queue | None, loop: asyncio.AbstractEventLoop | None = None) -> dict | None:
         """同步调用 DeepSeek API（streaming），通过 loop.call_soon_threadsafe 推送事件到 event_queue。"""
@@ -227,11 +229,18 @@ class BaseAgent:
         self,
         tool_calls: list[dict],
         event_queue: asyncio.Queue | None,
-    ) -> str:
-        """执行 tool_calls 中的所有函数调用，返回 tool 消息内容。"""
+    ) -> list[dict]:
+        """执行 tool_calls，返回每次调用对应的 tool 消息列表（含 tool_call_id）。
+
+        OpenAI/DeepSeek 规范：N 个 tool_call 必须对应 N 条 `{"role":"tool", "tool_call_id":..., "content":...}`，
+        否则下一轮请求会 400。
+        """
+        tool_messages: list[dict] = []
+
         for tc in tool_calls:
             fn = tc["function"]
             tool_name = fn["name"]
+            tool_call_id = tc.get("id", "")
             try:
                 args = json.loads(fn["arguments"]) if fn["arguments"] else {}
             except json.JSONDecodeError:
@@ -257,15 +266,18 @@ class BaseAgent:
                 if asyncio.iscoroutine(result):
                     result = await result
             except ValueError as e:
-                result = f"Error: {e}"
+                result = {"error": str(e)}
+            except Exception as e:  # noqa: BLE001
+                logger.exception(f"Tool {tool_name} crashed")
+                result = {"error": f"tool execution failed: {e}"}
 
+            # 完整结果给 API；截断版本只用于日志
             try:
                 result_str = json.dumps(result, ensure_ascii=False, default=str)
             except Exception:
                 result_str = str(result)
-            if len(result_str) > 500:
-                result_str = result_str[:500] + f"... [+{len(result_str)-500} chars]"
-            logger.info(f"Agent [{self.config.name}] TOOL RESULT [{tool_name}]: {result_str}")
+            log_str = result_str if len(result_str) <= 500 else result_str[:500] + f"... [+{len(result_str)-500} chars]"
+            logger.info(f"Agent [{self.config.name}] TOOL RESULT [{tool_name}]: {log_str}")
 
             # 推送 tool_result 事件
             if event_queue:
@@ -279,8 +291,13 @@ class BaseAgent:
                 except asyncio.QueueFull:
                     pass
 
-        # 返回所有工具结果的汇总
-        return json.dumps({"tool_results": "completed"}, ensure_ascii=False, default=str)
+            tool_messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": result_str,
+            })
+
+        return tool_messages
 
     def _build_user_message(self, context: dict) -> str:
         """构建 user message。"""
