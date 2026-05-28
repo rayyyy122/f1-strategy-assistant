@@ -11,6 +11,7 @@ from ..agents.race_context import create_agent as create_race_context
 from ..agents.tire_strategist import create_agent as create_tire_strategist
 from ..agents.competitor_analyst import create_agent as create_competitor_analyst
 from ..agents.synthesis import create_agent as create_synthesis
+from ..agents.intake import create_agent as create_intake
 from ..memory.manager import MemoryManager
 from ..memory.trace_store import save_trace
 from ..models.schemas import Intent
@@ -23,6 +24,7 @@ AGENT_FACTORIES = {
     "tire_strategist": create_tire_strategist,
     "competitor_analyst": create_competitor_analyst,
     "synthesis": create_synthesis,
+    "intake": create_intake,
 }
 
 
@@ -64,7 +66,11 @@ async def handle_prompt(
     # 使用 drain helper 在 Agent 执行时同步抽取 event_queue 的流式事件
     try:
         if intent.mode == "pre_race":
-            async for event in _drain_with(_run_pre_race(intent, prompt, event_queue, memory), event_queue):
+            # pre_race 之前先过 intake gate：缺字段就反问、不进策略分析
+            async for event in _drain_with(
+                _run_intake_then_pre_race(intent, prompt, history, event_queue, memory),
+                event_queue,
+            ):
                 yield event
 
         elif intent.mode == "post_race":
@@ -98,6 +104,66 @@ async def handle_prompt(
     yield {"type": "complete", "elapsed_s": elapsed, "usage": usage}
 
 
+async def _run_intake_then_pre_race(
+    intent: Intent,
+    prompt: str,
+    history: list[dict],
+    event_queue: asyncio.Queue,
+    memory: MemoryManager,
+) -> AsyncGenerator[dict, None]:
+    """先跑 intake agent 校验必填字段，齐了才进 _run_pre_race；缺了就反问。"""
+    yield {"type": "agent_start", "agent": "intake"}
+
+    intake_agent = AGENT_FACTORIES["intake"]()
+    intake_context = {
+        "task": (
+            "判断用户是否提供了 pre_race 策略分析所需的 4 个字段（season/round/team/driver）。"
+            "用工具校验。缺哪个就在 missing 里列出，齐了就 ready=true。仅输出 JSON。"
+        ),
+        "prompt": prompt,
+        "history": history,
+        "current_intent": {
+            "season": intent.season,
+            "round": intent.round,
+        },
+    }
+    intake_output = await intake_agent.run(intake_context, event_queue, force_first_tool_call=False)
+    yield {"type": "agent_complete", "agent": "intake", "output": intake_output.data}
+
+    data = intake_output.data or {}
+    extracted = data.get("extracted") or {}
+    missing = data.get("missing") or []
+    ready = bool(data.get("ready", False)) and not missing
+
+    if not ready:
+        logger.info(f"Intake gate: 缺失字段 {[m.get('field') for m in missing]}, 不进 pre_race")
+        yield {
+            "type": "clarification_needed",
+            "extracted": extracted,
+            "missing": missing,
+            "message": "我需要补充几个信息才能制定策略",
+        }
+        return
+
+    # 把 intake 提取的字段填回 intent
+    if extracted.get("season"):
+        intent.season = int(extracted["season"])
+    if extracted.get("round"):
+        intent.round = int(extracted["round"])
+    intent.team = extracted.get("team")
+    intent.driver = extracted.get("driver")
+    intent.race_name = extracted.get("race_name")
+    memory.working.intent = intent.model_dump()
+    logger.info(
+        f"Intake gate 通过：season={intent.season}, round={intent.round}, "
+        f"team={intent.team}, driver={intent.driver}"
+    )
+
+    # 继续完整 pre_race 流程
+    async for event in _run_pre_race(intent, prompt, event_queue, memory):
+        yield event
+
+
 async def _run_pre_race(
     intent: Intent,
     prompt: str,
@@ -125,13 +191,22 @@ async def _run_pre_race(
     # Step 2: Race Context (先跑，为后续 Agent 提供上下文)
     yield {"type": "agent_start", "agent": "race_context"}
     race_agent = AGENT_FACTORIES["race_context"]()
+    target_focus = ""
+    if intent.team and intent.driver:
+        target_focus = f" 重点针对 {intent.team} 车队的 {intent.driver}。"
+    elif intent.team:
+        target_focus = f" 重点针对 {intent.team} 车队。"
+    elif intent.driver:
+        target_focus = f" 重点针对车手 {intent.driver}。"
+
     race_context = {
         "task": (
-            f"分析 {season} 赛季第 {round_num} 站比赛。"
+            f"分析 {season} 赛季第 {round_num} 站比赛。{target_focus}"
             "请以 JSON 输出（结构化模式），输出会被下游 Agent 解析。"
         ),
         "race_data": race_data,
         "prompt": prompt,
+        "target": {"team": intent.team, "driver": intent.driver},
     }
     rc_output = await race_agent.run(race_context, event_queue, force_first_tool_call=True)
     memory.working.set_agent_output("race_context", rc_output)
@@ -146,10 +221,11 @@ async def _run_pre_race(
     comp_agent = AGENT_FACTORIES["competitor_analyst"]()
 
     context_for_parallel = {
-        "task": f"分析 {season} 赛季第 {round_num} 站比赛的策略",
+        "task": f"分析 {season} 赛季第 {round_num} 站比赛的策略。{target_focus}",
         "race_data": race_data,
         "upstream_outputs": {"race_context": rc_output},
         "prompt": prompt,
+        "target": {"team": intent.team, "driver": intent.driver},
     }
 
     tire_task = tire_agent.run(context_for_parallel, event_queue)
@@ -168,13 +244,14 @@ async def _run_pre_race(
     yield {"type": "agent_start", "agent": "synthesis"}
     synth_agent = AGENT_FACTORIES["synthesis"]()
     synth_context = {
-        "task": f"基于以下三个分析，给出 {season} 赛季第 {round_num} 站的最终策略建议",
+        "task": f"基于以下三个分析，给出 {season} 赛季第 {round_num} 站的最终策略建议。{target_focus}",
         "upstream_outputs": {
             "race_context": rc_output,
             "tire_strategist": tire_output,
             "competitor_analyst": comp_output,
         },
         "prompt": prompt,
+        "target": {"team": intent.team, "driver": intent.driver},
     }
     synth_output = await synth_agent.run(synth_context, event_queue)
     memory.working.set_agent_output("synthesis", synth_output)

@@ -7,9 +7,16 @@ import { DataCard } from "./DataCard";
 import { AgentThinkingBlock } from "./AgentThinkingBlock";
 import { StrategyCard } from "./StrategyCard";
 import { ComparisonCard } from "./ComparisonCard";
+import { ClarificationCard } from "./ClarificationCard";
 
-export function MessageBubble({ message }: { message: ChatMessage }) {
-  const { role, agent, content, thinking, isStreaming, dataCard, strategy, comparison, toolActivity } = message;
+export function MessageBubble({
+  message,
+  onClarificationSubmit,
+}: {
+  message: ChatMessage;
+  onClarificationSubmit?: (msgId: string, filled: Record<string, string>) => void;
+}) {
+  const { role, agent, content, thinking, isStreaming, dataCard, strategy, comparison, clarification, toolActivity } = message;
 
   // 系统消息（居中灰色）
   if (role === "system") {
@@ -58,6 +65,16 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
       {comparison && (
         <div className="mb-2 max-w-[90%]">
           <ComparisonCard comparison={comparison} />
+        </div>
+      )}
+
+      {/* 反问卡片 (intake gate 缺字段) */}
+      {clarification && (
+        <div className="mb-2 max-w-[90%]">
+          <ClarificationCard
+            data={clarification}
+            onSubmit={(filled) => onClarificationSubmit?.(message.id, filled)}
+          />
         </div>
       )}
 

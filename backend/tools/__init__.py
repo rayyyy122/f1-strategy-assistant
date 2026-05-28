@@ -10,3 +10,4 @@ from . import session_tools  # noqa: F401
 from . import weather_tools  # noqa: F401
 from . import strategy_tools  # noqa: F401
 from . import web_tools  # noqa: F401
+from . import team_driver_tools  # noqa: F401

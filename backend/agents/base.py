@@ -351,6 +351,24 @@ class BaseAgent:
                     output = output.data
                 parts.append(f"## {name} 输出\n{json.dumps(output, ensure_ascii=False, indent=2)}")
 
+        # 分析对象（车队/车手）— pre_race intake gate 之后才会有
+        if "target" in context and context["target"]:
+            target = context["target"]
+            target_lines = []
+            if target.get("team"):
+                target_lines.append(f"- 车队：{target['team']}")
+            if target.get("driver"):
+                target_lines.append(f"- 车手：{target['driver']}")
+            if target_lines:
+                parts.append("## 分析对象\n" + "\n".join(target_lines))
+
+        # 当前 intent（intake agent 看部分已知字段）
+        if "current_intent" in context and context["current_intent"]:
+            ci = context["current_intent"]
+            ci_lines = [f"- {k}: {v}" for k, v in ci.items() if v is not None]
+            if ci_lines:
+                parts.append("## 已知字段（来自 router 提取）\n" + "\n".join(ci_lines))
+
         # 用户原始问题 — 始终添加（如果有）
         if "prompt" in context and context["prompt"]:
             parts.append(f"## 用户原始问题\n{context['prompt']}")

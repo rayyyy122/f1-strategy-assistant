@@ -129,6 +129,34 @@ export function ChatWindow({ sessionId, onSessionCreated, onChatComplete }: Chat
     ]);
   };
 
+  // intake gate 反问后，用户在卡片上选好选项 → 拼接成自然语言 prompt 重新提交
+  const handleClarificationSubmit = (msgId: string, filled: Record<string, string>) => {
+    if (isStreaming) return;
+    const targetMsg = messages.find((m) => m.id === msgId);
+    const extracted = targetMsg?.clarification?.extracted || {};
+
+    const merged: Record<string, string> = {};
+    for (const [k, v] of Object.entries(extracted)) {
+      if (v !== null && v !== undefined && v !== "") merged[k] = String(v);
+    }
+    Object.assign(merged, filled);
+
+    const parts: string[] = [];
+    if (merged.season) parts.push(`${merged.season} 赛季`);
+    if (merged.race_name) {
+      parts.push(merged.race_name);
+    } else if (merged.race) {
+      parts.push(`第${merged.race}站`);
+    } else if (merged.round) {
+      parts.push(`第${merged.round}站`);
+    }
+    if (merged.team) parts.push(merged.team);
+    if (merged.driver) parts.push(merged.driver);
+
+    const newPrompt = `分析 ${parts.join(" ")} 的策略`;
+    sendPrompt(newPrompt);
+  };
+
   // 重新生成：找到最后一条用户消息，丢弃之后的内容并重新发送
   const handleRegenerate = () => {
     if (isStreaming) return;
@@ -253,6 +281,22 @@ export function ChatWindow({ sessionId, onSessionCreated, onChatComplete }: Chat
         ]);
         break;
 
+      case "clarification_needed":
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: nextMsgId(),
+            role: "agent",
+            content: "",
+            clarification: {
+              message: event.message,
+              extracted: event.extracted,
+              missing: event.missing,
+            },
+          },
+        ]);
+        break;
+
       case "complete":
         setMessages((prev) => [
           ...prev,
@@ -311,7 +355,11 @@ export function ChatWindow({ sessionId, onSessionCreated, onChatComplete }: Chat
           )}
           {showEmpty && <SuggestedPrompts onSelect={sendPrompt} />}
           {!loadingHistory && messages.map((msg) => (
-            <MessageBubble key={msg.id} message={msg} />
+            <MessageBubble
+              key={msg.id}
+              message={msg}
+              onClarificationSubmit={handleClarificationSubmit}
+            />
           ))}
           <div ref={bottomRef} />
         </div>

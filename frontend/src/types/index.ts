@@ -53,6 +53,26 @@ export interface AgentOutput {
   [key: string]: unknown;
 }
 
+// ---- Intake / Clarification ----
+
+export interface ClarificationOption {
+  value: string;
+  label: string;
+}
+
+export interface ClarificationField {
+  field: "season" | "race" | "team" | "driver" | string;
+  label: string;
+  prompt_hint?: string;
+  options?: ClarificationOption[];
+}
+
+export interface ClarificationData {
+  message: string;
+  extracted: Record<string, string | number | null>;
+  missing: ClarificationField[];
+}
+
 export type SSEEvent =
   | { type: "session_meta"; session_id: string; is_new: boolean }
   | { type: "routing"; mode: string; message: string }
@@ -66,6 +86,12 @@ export type SSEEvent =
   | { type: "agent_complete"; agent: string; output?: AgentOutput }
   | { type: "strategy_card"; strategy: StrategyData }
   | { type: "comparison_card"; comparison: ComparisonData }
+  | {
+      type: "clarification_needed";
+      message: string;
+      extracted: Record<string, string | number | null>;
+      missing: ClarificationField[];
+    }
   | { type: "complete"; elapsed_s?: number; usage?: { input_tokens?: number; output_tokens?: number } }
   | { type: "error"; message: string };
 
@@ -101,6 +127,7 @@ export interface ChatMessage {
   dataCard?: { card_type: string; data: unknown };
   strategy?: StrategyData;
   comparison?: ComparisonData;
+  clarification?: ClarificationData;
   toolActivity?: ToolActivity[];
 }
 

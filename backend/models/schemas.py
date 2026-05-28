@@ -111,4 +111,7 @@ class Intent(BaseModel):
     mode: str                    # "pre_race" | "post_race" | "track_info" | "quick_question" | "follow_up"
     season: Optional[int] = None
     round: Optional[int] = None
+    team: Optional[str] = None         # 规范化车队名（如 "Ferrari"）— pre_race 必填
+    driver: Optional[str] = None       # 规范化车手名（如 "Charles Leclerc"）— pre_race 必填
+    race_name: Optional[str] = None    # intake 解析时附带的赛事名（如 "Monaco Grand Prix"）
     params: dict = {}
