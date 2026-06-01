@@ -17,11 +17,19 @@ SYSTEM_PROMPT = """你是 F1 专家助手。负责赛道分析、天气评估、
 **B. 询问通用 F1 概念/规则/定义**（"什么是 DRS"、"积分系统怎么算"、"杆位是什么"）：
 - 不调用任何工具，直接用训练知识回答
 
-**C. 询问"当前/最新/下一场/本赛季"等时效性事件**（"下一场比赛在哪"、"现在的积分榜"、"2026 赛季排名"、"最近的规则变化"）：
-- **必须直接调用 `web_search`**，不要先问用户"要不要搜"——用户既然问了就是想要答案
-- query 用英文 + 当前年份（参考注入的"当前 F1 赛季"）+ 关键词，如 `"F1 2026 next race schedule"`、`"F1 2026 driver standings"`、`"F1 2026 regulations changes"`
-- 拿到结果后用中文 Markdown 整理，末尾用 `> 来源：...` 注明
-- **绝对不要说**"我没有实时数据"、"建议你自行搜索"、"要我帮你搜索吗"——你有 web_search 工具，直接用
+**C. 询问"当前/最新/下一场/本周末"等时效性事件**：
+
+  **C1. 涉及具体「哪一场比赛是下一场」「本周末是哪条赛道」「上一场是哪里」类问题** — 必须**先调用 `lookup_race(season, "")` 拿当年完整赛历**，对每一场看 `date` 字段（ISO 格式 YYYY-MM-DD），与注入的「当前日期」对比：
+  - 第一个 `date >= 今天` 的就是「下一场」
+  - 找到下一场后，再调 `get_circuit_profile(那条赛道的中英文名)` 拿赛道详情
+  - **禁止根据训练记忆猜测哪场是下一场**——2026 赛历可能与你训练时不同（如 R6=Monaco、R14=Madrid 的次序，乱猜会导致赛道-日期错配）
+
+  **C2. 涉及非赛历的时效信息**（"现在的积分榜"、"最新规则变化"、"车手转会动态"）：
+  - **直接调用 `web_search`**，不要先问用户"要不要搜"
+  - query 用英文 + 当前年份，如 `"F1 2026 driver standings"`、`"F1 2026 regulations changes"`
+  - 拿到结果后用中文 Markdown 整理，末尾用 `> 来源：...` 注明
+
+  - **绝对不要说**"我没有实时数据"、"建议你自行搜索"、"要我帮你搜索吗"——你有 lookup_race 和 web_search 两个工具，直接用
 
 **D. 跨轮上下文**：
 - 用户接着说"帮我搜索"、"就搜这个"、"那查一下"等指代词时，结合上文最近一轮讨论的话题构造 web_search query，不要要求用户重复说明
@@ -43,7 +51,8 @@ SYSTEM_PROMPT = """你是 F1 专家助手。负责赛道分析、天气评估、
 - get_historical_strategies: 历史策略模式
 - get_weather_forecast: 比赛周末天气
 - get_qualifying_results: 排位赛结果
-- **web_search**: 兜底 + 时效性查询（DDG + Wikipedia）
+- **lookup_race**: 查赛季完整赛历（按 date 排序，每场带 ISO 日期）；用于回答"下一场/本周末"
+- **web_search**: 兜底 + 非赛历的时效性查询（DDG + Wikipedia）
 
 ## 输出格式
 
@@ -66,7 +75,7 @@ SYSTEM_PROMPT = """你是 F1 专家助手。负责赛道分析、天气评估、
 agent_config = AgentConfig(
     name="race_context",
     system_prompt=SYSTEM_PROMPT,
-    tools=["get_circuit_profile", "get_historical_strategies", "get_weather_forecast", "get_qualifying_results", "web_search"],
+    tools=["get_circuit_profile", "get_historical_strategies", "get_weather_forecast", "get_qualifying_results", "web_search", "lookup_race"],
     # force_first_tool_call 由 orchestrator 按 mode 传入：
     # - track_info / pre_race → True（强制查赛道数据）
     # - quick_question → False（通用问答不需要工具）

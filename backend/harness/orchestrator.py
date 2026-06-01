@@ -105,6 +105,168 @@ async def handle_prompt(
     yield {"type": "complete", "elapsed_s": elapsed, "usage": usage}
 
 
+async def _compute_next_missing(extracted: dict) -> dict | None:
+    """按 season→race→team→driver 顺序找第一个缺失字段，调工具生成 options。
+
+    返回 None 表示 4 字段齐全。
+    """
+    season = extracted.get("season")
+    round_num = extracted.get("round")
+    team = extracted.get("team")
+    driver = extracted.get("driver")
+
+    # ---- Step 1: season ----
+    if not season:
+        from .time_context import current_season
+        cs = current_season()
+        years = list(range(cs, cs - 9, -1))  # 当前赛季回退 8 年
+        options = [
+            {"value": str(y), "label": f"{y} 赛季{'（当前）' if y == cs else ''}"}
+            for y in years
+        ]
+        options.append({"value": "other", "label": "更早赛季（请直接输入年份）"})
+        return {
+            "field": "season",
+            "label": "赛季",
+            "prompt_hint": "你想分析哪个赛季的比赛？",
+            "options": options,
+        }
+
+    try:
+        season_int = int(season)
+    except (ValueError, TypeError):
+        return {
+            "field": "season",
+            "label": "赛季",
+            "prompt_hint": f"无法识别赛季 '{season}'，请重新选择",
+            "options": [],
+        }
+
+    # ---- Step 2: race（round + race_name）----
+    if not round_num:
+        from ..tools.team_driver_tools import _lookup_race
+        sched_result = await _lookup_race(season_int, "")
+        schedule = sched_result.get("schedule", [])
+        options = [
+            {
+                "value": str(r["round"]),
+                "label": _race_label_cn(r),
+            }
+            for r in schedule
+        ]
+        return {
+            "field": "race",
+            "label": "比赛",
+            "prompt_hint": f"{season_int} 赛季你想分析哪一站？",
+            "options": options,
+        }
+
+    # ---- Step 3: team ----
+    if not team:
+        from ..tools.team_driver_tools import _list_season_teams
+        result = await _list_season_teams(season_int)
+        teams = result.get("teams", [])
+        options = [
+            {"value": t["value"], "label": _team_label_cn(t["value"])}
+            for t in teams
+        ]
+        return {
+            "field": "team",
+            "label": "车队",
+            "prompt_hint": "针对哪个车队的策略？",
+            "options": options,
+        }
+
+    # ---- Step 4: driver ----
+    if not driver:
+        from ..tools.team_driver_tools import _lookup_team
+        result = await _lookup_team(team, season_int)
+        drivers = result.get("drivers", []) if result.get("found") else []
+        options = [
+            {"value": d, "label": _driver_label_cn(d)}
+            for d in drivers
+        ]
+        return {
+            "field": "driver",
+            "label": "车手",
+            "prompt_hint": f"{team} 的哪位车手？",
+            "options": options,
+        }
+
+    return None  # 4 字段齐全
+
+
+# ---- 中文显示映射（label 用，value 仍是规范英文名）----
+
+_TEAM_CN: dict[str, str] = {
+    "Red Bull Racing": "红牛", "Ferrari": "法拉利", "Mercedes": "梅赛德斯",
+    "McLaren": "迈凯伦", "Aston Martin": "阿斯顿马丁", "Alpine": "阿尔派",
+    "Williams": "威廉姆斯", "Racing Bulls": "小红牛", "RB": "小红牛",
+    "Kick Sauber": "索伯", "Sauber": "索伯", "Audi": "奥迪",
+    "Haas": "哈斯", "Cadillac": "凯迪拉克",
+    # 历史车队
+    "Renault": "雷诺", "Force India": "印度力量", "Lotus": "莲花",
+    "Toro Rosso": "红牛二队", "AlphaTauri": "阿尔法塔利", "Alfa Romeo": "阿尔法罗密欧",
+    "Caterham": "卡特汉姆", "Manor": "马诺", "HRT": "HRT",
+    "Marussia": "玛鲁西亚",
+}
+
+_DRIVER_CN: dict[str, str] = {
+    "Max Verstappen": "维斯塔潘", "Sergio Perez": "佩雷兹",
+    "Charles Leclerc": "勒克莱尔", "Carlos Sainz": "塞恩斯",
+    "Lewis Hamilton": "汉密尔顿", "George Russell": "拉塞尔",
+    "Lando Norris": "诺里斯", "Oscar Piastri": "皮亚斯特里",
+    "Fernando Alonso": "阿隆索", "Lance Stroll": "斯特罗尔",
+    "Pierre Gasly": "加斯利", "Esteban Ocon": "奥康",
+    "Alexander Albon": "阿尔本", "Logan Sargeant": "萨金特",
+    "Daniel Ricciardo": "里卡多", "Yuki Tsunoda": "角田裕毅",
+    "Valtteri Bottas": "博塔斯", "Zhou Guanyu": "周冠宇",
+    "Kevin Magnussen": "马格努森", "Nico Hulkenberg": "霍肯伯格",
+    "Andrea Kimi Antonelli": "安东内利", "Franco Colapinto": "科拉平托",
+    "Liam Lawson": "劳森", "Isack Hadjar": "哈贾尔",
+    "Gabriel Bortoleto": "博尔托莱托", "Oliver Bearman": "贝尔曼",
+    "Arvid Lindblad": "林德布拉德",
+}
+
+_RACE_CN: dict[str, str] = {
+    "Bahrain": "巴林", "Saudi Arabian": "沙特", "Australian": "澳大利亚",
+    "Japanese": "日本", "Chinese": "中国", "Miami": "迈阿密",
+    "Emilia Romagna": "伊莫拉", "Monaco": "摩纳哥", "Canadian": "加拿大",
+    "Spanish": "西班牙", "Austrian": "奥地利", "British": "英国",
+    "Hungarian": "匈牙利", "Belgian": "比利时", "Dutch": "荷兰",
+    "Italian": "意大利", "Azerbaijan": "阿塞拜疆", "Singapore": "新加坡",
+    "United States": "美国", "Mexico City": "墨西哥城", "Brazilian": "巴西",
+    "Las Vegas": "拉斯维加斯", "Qatar": "卡塔尔", "Abu Dhabi": "阿布扎比",
+    "Barcelona": "巴塞罗那",
+}
+
+
+def _race_label_cn(race: dict) -> str:
+    """生成赛事中文标签：'摩纳哥大奖赛 (Monaco GP, 第8站, 2026-06-07)'"""
+    name = race.get("race_name", "")
+    short = name.replace(" Grand Prix", "").strip()
+    cn = _RACE_CN.get(short, short)
+    rnd = race.get("round", "?")
+    date = race.get("date", "")
+    en_short = f"{short} GP" if short else name
+    suffix = f"第{rnd}站"
+    if date:
+        suffix += f", {date}"
+    return f"{cn}大奖赛 ({en_short}, {suffix})" if cn != short else f"{en_short} (第{rnd}站, {date})"
+
+
+def _team_label_cn(team_en: str) -> str:
+    """生成车队中文标签：'法拉利 (Ferrari)'"""
+    cn = _TEAM_CN.get(team_en)
+    return f"{cn} ({team_en})" if cn else team_en
+
+
+def _driver_label_cn(driver_en: str) -> str:
+    """生成车手中文标签：'勒克莱尔 (Charles Leclerc)'"""
+    cn = _DRIVER_CN.get(driver_en)
+    return f"{cn} ({driver_en})" if cn else driver_en
+
+
 async def _run_intake_then_pre_race(
     intent: Intent,
     prompt: str,
@@ -133,20 +295,23 @@ async def _run_intake_then_pre_race(
 
     data = intake_output.data or {}
     extracted = data.get("extracted") or {}
-    # 新格式：单字段 next_missing；兼容旧格式 missing 数组
-    next_missing = data.get("next_missing")
-    missing_list = data.get("missing") or []
-    if next_missing and not missing_list:
-        missing_list = [next_missing]
-    ready = bool(data.get("ready", False)) and not missing_list
 
-    if not ready:
-        logger.info(f"Intake gate: 缺失字段 {[m.get('field') for m in missing_list]}, 不进 pre_race")
+    # 用 router 已提取的字段做兜底（避免 LLM 漏写）
+    if not extracted.get("season") and intent.season:
+        extracted["season"] = intent.season
+    if not extracted.get("round") and intent.round:
+        extracted["round"] = intent.round
+
+    # 代码权威判定 — 不依赖 LLM 的 ready/missing 字段
+    next_missing = await _compute_next_missing(extracted)
+
+    if next_missing is not None:
+        logger.info(f"Intake gate: 缺失字段 ['{next_missing['field']}'], 不进 pre_race")
         yield {
             "type": "clarification_needed",
             "extracted": extracted,
-            "missing": missing_list,
-            "message": next_missing.get("prompt_hint", "我需要补充几个信息才能制定策略") if next_missing else "我需要补充几个信息才能制定策略",
+            "missing": [next_missing],
+            "message": next_missing.get("prompt_hint", "我需要补充几个信息才能制定策略"),
         }
         return
 
@@ -194,7 +359,7 @@ async def _run_pre_race(
     yield {"type": "progress", "step": "done", "message": "数据加载完成，开始 Agent 分析"}
 
     # Step 2: Race Context (先跑，为后续 Agent 提供上下文)
-    yield {"type": "agent_start", "agent": "race_context"}
+    yield {"type": "agent_start", "agent": "race_context", "intermediate": True}
     race_agent = AGENT_FACTORIES["race_context"]()
     target_focus = ""
     if intent.team and intent.driver:
@@ -219,8 +384,8 @@ async def _run_pre_race(
     logger.info(f"Race Context 完成")
 
     # Step 3: Tire + Competitor 并行
-    yield {"type": "agent_start", "agent": "tire_strategist"}
-    yield {"type": "agent_start", "agent": "competitor_analyst"}
+    yield {"type": "agent_start", "agent": "tire_strategist", "intermediate": True}
+    yield {"type": "agent_start", "agent": "competitor_analyst", "intermediate": True}
 
     tire_agent = AGENT_FACTORIES["tire_strategist"]()
     comp_agent = AGENT_FACTORIES["competitor_analyst"]()
@@ -532,14 +697,19 @@ async def _run_quick(prompt, event_queue, memory, force_tool: bool = False, hist
     agent = AGENT_FACTORIES["race_context"]()
     if force_tool:
         task = (
-            "用户在询问某条具体赛道。请按 IRON RULE 规则 A 先调用 get_circuit_profile 工具查询，"
-            "再基于工具返回的数据用清晰的中文 Markdown 回答（不要使用 JSON 格式）。"
+            "用户在询问具体赛道或当前赛季的赛事信息。按 IRON RULE 判断："
+            "提到具体赛道名（如「介绍摩纳哥」）→ 规则 A，直接调 get_circuit_profile；"
+            "提到「下一场/本周末/上一场」等时效性比赛询问 → 规则 C1，**先调 lookup_race(season, '') 拿赛历**，"
+            "按 date 字段对比注入的当前日期找出对应那场，再调 get_circuit_profile 拿赛道详情。"
+            "禁止根据训练记忆猜测哪场是下一场——必须基于工具数据。"
+            "用清晰的中文 Markdown 回答（不要 JSON）。"
         )
     else:
         task = (
             "用户在问 F1 知识。按 IRON RULE 判断："
             "定义/规则/概念 → 规则 B 直接答；"
-            "「当前/最新/下一场/本赛季」等时效性问题 → 规则 C 直接调 web_search，不要问用户授权；"
+            "「下一场/本周末」类赛历问题 → 规则 C1，先调 lookup_race 再 get_circuit_profile；"
+            "「积分榜/规则变化/转会动态」类非赛历时效问题 → 规则 C2 调 web_search；"
             "如果之前轮对话已经提到具体话题且用户说「帮我搜索」「就搜这个」，请结合上文话题构造搜索词，不要要求用户重复说明。"
             "用清晰的中文 Markdown 回答，不要使用 JSON 格式。"
         )

@@ -17,7 +17,7 @@ export const MessageBubble = memo(function MessageBubble({
   message: ChatMessage;
   onClarificationSubmit?: (msgId: string, filled: Record<string, string>) => void;
 }) {
-  const { role, agent, content, thinking, isStreaming, dataCard, strategy, comparison, clarification, guardrailsWarnings, toolActivity } = message;
+  const { role, agent, content, thinking, isStreaming, isIntermediate, dataCard, strategy, comparison, clarification, guardrailsWarnings, toolActivity } = message;
 
   // 系统消息（居中灰色）
   if (role === "system") {
@@ -102,15 +102,22 @@ export const MessageBubble = memo(function MessageBubble({
               <div className="text-xs text-zinc-500 mb-1 font-medium flex items-center gap-1">
                 <AgentBadge agent={agent} />
                 {isStreaming && <span className="text-red-500 ml-1 animate-pulse">...</span>}
+                {isIntermediate && !isStreaming && (
+                  <span className="text-[10px] text-zinc-600 ml-1">· 中间分析</span>
+                )}
               </div>
             )}
             <AgentThinkingBlock text={thinking || ""} isStreaming={isStreaming && !content} />
             {toolActivity && toolActivity.length > 0 && (
               <ToolActivityBlock activity={toolActivity} isStreaming={isStreaming} />
             )}
-            {content && <MarkdownContent text={content} isStreaming={isStreaming} />}
-            {content && !isStreaming && (
-              <CopyButton text={content} />
+            {content && isIntermediate ? (
+              <IntermediateContent text={content} isStreaming={isStreaming} />
+            ) : (
+              <>
+                {content && <MarkdownContent text={content} isStreaming={isStreaming} />}
+                {content && !isStreaming && <CopyButton text={content} />}
+              </>
             )}
           </div>
         </div>
@@ -178,10 +185,11 @@ function truncateJSON(value: unknown, maxLen: number = 200): string {
 
 function AgentBadge({ agent }: { agent: string }) {
   const badges: Record<string, { icon: string; label: string; color: string }> = {
-    race_context: { icon: "🏁", label: "Race Context", color: "text-zinc-400" },
-    tire_strategist: { icon: "🛞", label: "Tire Strategist", color: "text-emerald-400" },
-    competitor_analyst: { icon: "🏎️", label: "Competitor Analyst", color: "text-purple-400" },
-    synthesis: { icon: "🎯", label: "Synthesis", color: "text-red-500" },
+    intake: { icon: "📋", label: "信息校验员", color: "text-amber-400" },
+    race_context: { icon: "🏁", label: "赛道分析师", color: "text-zinc-300" },
+    tire_strategist: { icon: "🛞", label: "轮胎策略师", color: "text-emerald-400" },
+    competitor_analyst: { icon: "🏎️", label: "对手分析师", color: "text-purple-400" },
+    synthesis: { icon: "🎯", label: "首席策略师", color: "text-red-500" },
   };
   const badge = badges[agent] || { icon: "🤖", label: agent, color: "text-zinc-400" };
   return (
@@ -229,6 +237,12 @@ function MarkdownContent({ text, isStreaming }: { text: string; isStreaming?: bo
             if (isInline) {
               return <code className="bg-zinc-800 text-red-300 px-1.5 py-0.5 rounded text-[0.8em] font-mono">{children}</code>;
             }
+            const lang = (className || "").replace("language-", "").toLowerCase();
+            const raw = String(children ?? "");
+            // JSON 块默认折叠（已有 strategy_card 展示结构化数据，markdown 里的 JSON 是冗余噪音）
+            if (lang === "json" || raw.trim().startsWith("{") || raw.trim().startsWith("[")) {
+              return <CollapsibleCodeBlock text={raw} language={lang || "json"} />;
+            }
             return (
               <code className="block bg-zinc-950 border border-zinc-800 text-zinc-200 p-3 rounded-lg my-2 text-xs font-mono overflow-x-auto">
                 {children}
@@ -254,6 +268,83 @@ function MarkdownContent({ text, isStreaming }: { text: string; isStreaming?: bo
         {text}
       </ReactMarkdown>
       {isStreaming && <span className="text-red-500 animate-pulse ml-0.5">▌</span>}
+    </div>
+  );
+}
+
+function IntermediateContent({ text, isStreaming }: { text: string; isStreaming?: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+
+  // 简单提取摘要：内容长时显示前 N 字 + 字数统计
+  const preview = isStreaming
+    ? `正在分析... (已 ${text.length} 字)`
+    : `已完成分析 (${text.length} 字，含结构化 JSON)`;
+
+  if (!expanded) {
+    return (
+      <button
+        type="button"
+        onClick={() => setExpanded(true)}
+        className="mt-1 text-[11px] text-zinc-600 hover:text-zinc-400 transition-colors flex items-center gap-1 cursor-pointer"
+        title="点击查看中间分析"
+      >
+        <span className="inline-block w-3 h-3 text-center leading-3">+</span>
+        <span>{preview}</span>
+        {isStreaming && <span className="text-red-500 animate-pulse ml-0.5">▌</span>}
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-1">
+      <button
+        type="button"
+        onClick={() => setExpanded(false)}
+        className="text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors flex items-center gap-1 cursor-pointer mb-1"
+      >
+        <span className="inline-block w-3 h-3 text-center leading-3">−</span>
+        <span>收起中间分析</span>
+      </button>
+      <div className="pl-3 border-l-2 border-zinc-800 text-xs text-zinc-400 whitespace-pre-wrap break-words leading-relaxed max-h-64 overflow-y-auto font-mono">
+        {text}
+      </div>
+      {!isStreaming && <CopyButton text={text} />}
+    </div>
+  );
+}
+
+function CollapsibleCodeBlock({ text, language }: { text: string; language: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const lines = text.split("\n").length;
+  const label = language ? language.toUpperCase() : "代码";
+
+  if (!expanded) {
+    return (
+      <button
+        type="button"
+        onClick={() => setExpanded(true)}
+        className="my-2 text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors flex items-center gap-1 cursor-pointer bg-zinc-950 border border-zinc-800 rounded px-2 py-1"
+        title="点击展开代码"
+      >
+        <span className="inline-block w-3 h-3 text-center leading-3">+</span>
+        <span>{label} 块 ({lines} 行)</span>
+      </button>
+    );
+  }
+
+  return (
+    <div className="my-2">
+      <button
+        type="button"
+        onClick={() => setExpanded(false)}
+        className="text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors flex items-center gap-1 cursor-pointer mb-1"
+      >
+        <span className="inline-block w-3 h-3 text-center leading-3">−</span>
+        <span>收起 {label} 块</span>
+      </button>
+      <code className="block bg-zinc-950 border border-zinc-800 text-zinc-200 p-3 rounded-lg text-xs font-mono overflow-x-auto whitespace-pre">
+        {text}
+      </code>
     </div>
   );
 }

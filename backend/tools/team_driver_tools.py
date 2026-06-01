@@ -447,6 +447,7 @@ async def _lookup_race(season: int, query: str) -> dict[str, Any]:
                 "race_name": r.get("raceName", ""),
                 "circuit_name": r.get("Circuit", {}).get("circuitName", ""),
                 "country": r.get("Circuit", {}).get("Location", {}).get("country", ""),
+                "date": r.get("date", ""),  # ISO 日期 YYYY-MM-DD，agent 据此判断"下一场"
             }
             for r in races
         ]
@@ -468,6 +469,7 @@ async def _lookup_race(season: int, query: str) -> dict[str, Any]:
                         "race_name": r.get("raceName", ""),
                         "circuit_name": r.get("Circuit", {}).get("circuitName", ""),
                         "country": r.get("Circuit", {}).get("Location", {}).get("country", ""),
+                        "date": r.get("date", ""),
                     }
         except ValueError:
             pass
@@ -506,6 +508,7 @@ async def _lookup_race(season: int, query: str) -> dict[str, Any]:
             "race_name": best.get("raceName", ""),
             "circuit_name": best.get("Circuit", {}).get("circuitName", ""),
             "country": best.get("Circuit", {}).get("Location", {}).get("country", ""),
+            "date": best.get("date", ""),
         }
 
     # 没匹配上 — 返回完整赛历给 LLM 看
@@ -602,7 +605,8 @@ registry.register(
     description=(
         "根据查询词匹配某赛季的一场或全部比赛。"
         "有 query：模糊匹配赛道/国家/轮次 → 返回单场 round。"
-        "无 query：返回完整赛历（24 站）→ is_full_schedule=true。"
+        "无 query：返回完整赛历（含每站日期 date）→ is_full_schedule=true。"
+        "用于回答「下一场比赛是哪一站」「本周末是哪条赛道」等时效性问题。"
     ),
     func=_lookup_race,
     parameters_schema={
@@ -613,5 +617,5 @@ registry.register(
         },
         "required": ["season"],
     },
-    agents=["intake"],
+    agents=["intake", "race_context"],
 )

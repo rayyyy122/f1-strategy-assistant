@@ -204,7 +204,16 @@ export function ChatWindow({ sessionId, onSessionCreated, onChatComplete }: Chat
       case "agent_start":
         setMessages((prev) => [
           ...prev,
-          { id: nextMsgId(), role: "agent", agent: event.agent, content: "", thinking: "", isStreaming: true, toolActivity: [] },
+          {
+            id: nextMsgId(),
+            role: "agent",
+            agent: event.agent,
+            content: "",
+            thinking: "",
+            isStreaming: true,
+            isIntermediate: event.intermediate === true,
+            toolActivity: [],
+          },
         ]);
         break;
 
