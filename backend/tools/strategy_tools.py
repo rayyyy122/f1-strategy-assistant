@@ -31,16 +31,106 @@ def _safe_float(value, default=None):
         return default
 
 
+def _extract_race_strategies(session) -> dict[str, dict]:
+    """从 session.laps 提取每位车手的进站策略。
+
+    通过 Compound 切换自动推算进站。F1 比赛中除红旗外无法不通过进站换胎，
+    因此连续圈之间的 Compound 变化 = 一次进站。
+
+    **红旗过滤**：如果同一圈有 >= 一半车手同时换胎，判定为红旗重开，整圈不计入进站。
+
+    Returns:
+        {driver_code: {
+            "stops": int,           # 进站次数
+            "strategy": str,        # "一停" / "二停" / "三停" / "零停"
+            "compounds": [str],     # 配方序列（起步配方 → 停1后……）
+            "pit_laps": [int],      # 出场圈 lap number
+        }, ...}
+    """
+    strategies: dict[str, dict] = {}
+
+    try:
+        laps = session.laps
+    except Exception:
+        return strategies
+
+    # Step 1：收集每个车手的 compound 切换点
+    raw_transitions: dict[str, list[tuple[str, int]]] = {}  # driver → [(compound, first_lap), ...]
+
+    for driver in laps["Driver"].unique():
+        driver_laps = laps[laps["Driver"] == driver].sort_values("LapNumber")
+        if driver_laps.empty:
+            continue
+
+        seq: list[tuple[str, int]] = []
+        for _, lap in driver_laps.iterrows():
+            compound = str(lap["Compound"])
+            lap_num = _safe_int(lap.get("LapNumber"), 0)
+            if not seq or seq[-1][0] != compound:
+                seq.append((compound, lap_num))
+        raw_transitions[str(driver)] = seq
+
+    # Step 2：检测红旗 — 同圈 >= 一半车手都换胎
+    total_drivers = len(raw_transitions)
+    lap_transition_count: dict[int, int] = {}
+    for seq in raw_transitions.values():
+        for _, lap_num in seq[1:]:  # 跳过起步配方
+            lap_transition_count[lap_num] = lap_transition_count.get(lap_num, 0) + 1
+
+    red_flag_laps: set[int] = set()
+    threshold = max(total_drivers // 2, 1)
+    for lap_num, count in lap_transition_count.items():
+        if lap_num <= 3 and count >= threshold:
+            red_flag_laps.add(lap_num)
+
+    # Step 3：过滤红旗后构建最终策略
+    for driver, seq in raw_transitions.items():
+        filtered: list[tuple[str, int]] = [seq[0]]  # 起步配方保留
+        for compound, lap_num in seq[1:]:
+            if lap_num not in red_flag_laps:
+                filtered.append((compound, lap_num))
+
+        if len(filtered) <= 1:
+            # 仅起步配方 → 0 停（红旗换胎不算进站）
+            continue
+
+        stops = len(filtered) - 1
+        if stops == 1:
+            type_str = "一停"
+        elif stops == 2:
+            type_str = "二停"
+        elif stops >= 3:
+            type_str = f"{stops}停"
+        else:
+            type_str = "零停"
+
+        compound_names = [c for c, _ in filtered]
+        pit_laps = [n for _, n in filtered[1:]]
+
+        strategies[driver] = {
+            "stops": stops,
+            "strategy": type_str,
+            "compounds": compound_names,
+            "pit_laps": pit_laps,
+        }
+
+    return strategies
+
+
 async def _load_actual_race_result(year: int, round_num: int) -> dict:
-    """加载真实比赛结果（正赛排名）。
+    """加载真实比赛结果（正赛排名）+ 每车手进站策略。
 
     优先使用 session.results（FastF1 官方分类排名，包含 DNF/DSQ 处理），
     退回到 laps 数据作为备选。
+    进站策略通过 session.laps 的 Compound 切换自动推算。
     """
     try:
         session = fastf1_client.load_session(year, round_num, "R")
     except Exception as e:
         return {"error": f"加载比赛 session 失败 ({year} R{round_num}): {e}"}
+
+    # ---- 提取每车手进站策略（两个结果路径共享） ----
+    strategies = _extract_race_strategies(session)
 
     # 优先用 session.results
     try:
@@ -78,7 +168,7 @@ async def _load_actual_race_result(year: int, round_num: int) -> dict:
                 })
 
             results.sort(key=lambda x: x["position"])
-            return {"year": year, "round": round_num, "source": "session.results", "results": results}
+            return {"year": year, "round": round_num, "source": "session.results", "results": results, "strategies": strategies}
     except Exception as e:
         # 回退到 laps
         pass
@@ -104,7 +194,7 @@ async def _load_actual_race_result(year: int, round_num: int) -> dict:
             })
 
         results.sort(key=lambda x: x["position"])
-        return {"year": year, "round": round_num, "source": "laps", "results": results}
+        return {"year": year, "round": round_num, "source": "laps", "results": results, "strategies": strategies}
     except Exception as e:
         return {"error": f"加载比赛结果失败: {e}"}
 

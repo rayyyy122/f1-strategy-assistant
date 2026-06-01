@@ -281,6 +281,33 @@ export function ChatWindow({ sessionId, onSessionCreated, onChatComplete }: Chat
         ]);
         break;
 
+      case "guardrails_warning":
+        setMessages((prev) => {
+          const updated = [...prev];
+          for (let i = updated.length - 1; i >= 0; i--) {
+            if (updated[i].agent === event.agent) {
+              updated[i] = {
+                ...updated[i],
+                guardrailsWarnings: [
+                  ...(updated[i].guardrailsWarnings || []),
+                  ...event.warnings,
+                ],
+              };
+              return updated;
+            }
+          }
+          // no matching agent message, append as system
+          return [
+            ...updated,
+            {
+              id: nextMsgId(),
+              role: "system",
+              content: `⚠️ ${event.agent} 校验警告: ${event.warnings.join("; ")}`,
+            },
+          ];
+        });
+        break;
+
       case "clarification_needed":
         setMessages((prev) => [
           ...prev,

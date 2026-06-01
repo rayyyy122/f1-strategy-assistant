@@ -52,7 +52,8 @@ async def route_intent(prompt: str, history: list[dict] | None = None) -> Intent
     # 如果关键词匹配明确(>=2个词命中)，直接返回，节省 LLM 调用
     if best_score >= 2:
         season, round_num = _extract_season_round(prompt_lower)
-        if season is None and best_mode in ("pre_race", "post_race", "follow_up"):
+        # pre_race 留给 intake agent 处理缺失字段（含赛季），不要自动填当前赛季
+        if season is None and best_mode in ("post_race", "follow_up"):
             season = current_season()
         logger.info(f"Router (keyword) → mode={best_mode}, season={season}, round={round_num}")
         return Intent(mode=best_mode, season=season, round=round_num, params={})
@@ -104,14 +105,22 @@ async def route_intent(prompt: str, history: list[dict] | None = None) -> Intent
     mode = data.get("mode", "quick_question")
     season = data.get("season")
 
-    # 防御：用户 prompt 没有显式年份时，LLM 倾向猜训练截止时间。统一按当前赛季处理。
+    # 防御：用户 prompt 没有显式年份时，LLM 倾向猜训练截止时间。
+    # pre_race 模式下留给 intake agent 处理（不要自动填当前赛季），
+    # 其他需要比赛数据的模式统一按当前赛季兜底。
     import re
     user_specified_year = bool(re.search(r"20\d{2}", prompt))
-    if not user_specified_year and mode in ("pre_race", "post_race", "follow_up"):
-        if season != current_season():
+    if not user_specified_year:
+        if mode in ("post_race", "follow_up"):
+            if season != current_season():
+                if season is not None:
+                    logger.info(f"Router: LLM season={season} 与 prompt 不符（无年份），纠正为 {current_season()}")
+                season = current_season()
+        elif mode == "pre_race":
+            # pre_race 由 intake agent 负责反问缺失字段（含赛季），不要自动填
             if season is not None:
-                logger.info(f"Router: LLM season={season} 与 prompt 不符（无年份），纠正为 {current_season()}")
-            season = current_season()
+                logger.info(f"Router: pre_race LLM 自动填了 season={season}，但用户未指定年份，回置为 None 交给 intake")
+            season = None
 
     return Intent(
         mode=mode,

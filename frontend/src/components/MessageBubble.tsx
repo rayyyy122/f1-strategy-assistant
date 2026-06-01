@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Copy, Check, ChevronRight, ChevronDown, Wrench } from "lucide-react";
@@ -9,14 +9,15 @@ import { StrategyCard } from "./StrategyCard";
 import { ComparisonCard } from "./ComparisonCard";
 import { ClarificationCard } from "./ClarificationCard";
 
-export function MessageBubble({
+export const MessageBubble = memo(function MessageBubble({
+
   message,
   onClarificationSubmit,
 }: {
   message: ChatMessage;
   onClarificationSubmit?: (msgId: string, filled: Record<string, string>) => void;
 }) {
-  const { role, agent, content, thinking, isStreaming, dataCard, strategy, comparison, clarification, toolActivity } = message;
+  const { role, agent, content, thinking, isStreaming, dataCard, strategy, comparison, clarification, guardrailsWarnings, toolActivity } = message;
 
   // 系统消息（居中灰色）
   if (role === "system") {
@@ -78,6 +79,21 @@ export function MessageBubble({
         </div>
       )}
 
+      {/* guardrails 校验警告 */}
+      {guardrailsWarnings && guardrailsWarnings.length > 0 && (
+        <div className="mb-1 max-w-[85%]">
+          <div className="rounded-lg px-3 py-2 text-xs border bg-amber-950/20 border-amber-700/30">
+            <div className="flex items-center gap-1.5 mb-1">
+              <span className="text-amber-400 text-[10px]">⚠️</span>
+              <span className="text-amber-300 font-medium">策略校验警告</span>
+            </div>
+            {guardrailsWarnings.map((w, i) => (
+              <div key={i} className="text-amber-200/70 leading-relaxed">· {w}</div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Agent 气泡 */}
       {(agent || content || thinking || (toolActivity && toolActivity.length > 0)) && (
         <div className="max-w-[85%] min-w-0 group">
@@ -101,7 +117,7 @@ export function MessageBubble({
       )}
     </div>
   );
-}
+});
 
 function ToolActivityBlock({ activity, isStreaming }: { activity: ToolActivity[]; isStreaming?: boolean }) {
   const [expanded, setExpanded] = useState(false);
@@ -176,6 +192,19 @@ function AgentBadge({ agent }: { agent: string }) {
 }
 
 function MarkdownContent({ text, isStreaming }: { text: string; isStreaming?: boolean }) {
+  // streaming 期间内容较长时用纯文本渲染，避免 ReactMarkdown 在每次 delta 时
+  // 重新解析整个不断膨胀的 markdown 树（10KB+ × 100+ delta = 浏览器黑屏）
+  const usePlainText = isStreaming && text.length > 1000;
+
+  if (usePlainText) {
+    return (
+      <div className="text-sm text-zinc-200 leading-relaxed">
+        <div className="whitespace-pre-wrap break-words">{text}</div>
+        {isStreaming && <span className="text-red-500 animate-pulse ml-0.5">?</span>}
+      </div>
+    );
+  }
+
   return (
     <div className="text-sm text-zinc-200 leading-relaxed markdown-body">
       <ReactMarkdown

@@ -7,6 +7,7 @@ from typing import AsyncGenerator
 
 from .router import route_intent
 from .logger import get_logger
+from . import guardrails
 from ..agents.race_context import create_agent as create_race_context
 from ..agents.tire_strategist import create_agent as create_tire_strategist
 from ..agents.competitor_analyst import create_agent as create_competitor_analyst
@@ -118,7 +119,7 @@ async def _run_intake_then_pre_race(
     intake_context = {
         "task": (
             "判断用户是否提供了 pre_race 策略分析所需的 4 个字段（season/round/team/driver）。"
-            "用工具校验。缺哪个就在 missing 里列出，齐了就 ready=true。仅输出 JSON。"
+            "按顺序逐一检查，只输出第一个缺失字段的选项。齐了就 ready=true。仅输出 JSON。"
         ),
         "prompt": prompt,
         "history": history,
@@ -127,21 +128,25 @@ async def _run_intake_then_pre_race(
             "round": intent.round,
         },
     }
-    intake_output = await intake_agent.run(intake_context, event_queue, force_first_tool_call=False)
+    intake_output = await intake_agent.run(intake_context, None, force_first_tool_call=False)
     yield {"type": "agent_complete", "agent": "intake", "output": intake_output.data}
 
     data = intake_output.data or {}
     extracted = data.get("extracted") or {}
-    missing = data.get("missing") or []
-    ready = bool(data.get("ready", False)) and not missing
+    # 新格式：单字段 next_missing；兼容旧格式 missing 数组
+    next_missing = data.get("next_missing")
+    missing_list = data.get("missing") or []
+    if next_missing and not missing_list:
+        missing_list = [next_missing]
+    ready = bool(data.get("ready", False)) and not missing_list
 
     if not ready:
-        logger.info(f"Intake gate: 缺失字段 {[m.get('field') for m in missing]}, 不进 pre_race")
+        logger.info(f"Intake gate: 缺失字段 {[m.get('field') for m in missing_list]}, 不进 pre_race")
         yield {
             "type": "clarification_needed",
             "extracted": extracted,
-            "missing": missing,
-            "message": "我需要补充几个信息才能制定策略",
+            "missing": missing_list,
+            "message": next_missing.get("prompt_hint", "我需要补充几个信息才能制定策略") if next_missing else "我需要补充几个信息才能制定策略",
         }
         return
 
@@ -240,6 +245,12 @@ async def _run_pre_race(
     yield {"type": "agent_complete", "agent": "competitor_analyst", "output": comp_output.data}
     logger.info(f"Tire + Competitor 并行完成")
 
+    # guardrails: 轮胎策略
+    tire_warnings = guardrails.validate_tire_strategy(tire_output.data or {})
+    if tire_warnings:
+        logger.warning(f"Guardrails [tire_strategist] {len(tire_warnings)} 条警告: {'; '.join(tire_warnings[:3])}")
+        yield {"type": "guardrails_warning", "agent": "tire_strategist", "warnings": tire_warnings}
+
     # Step 4: Synthesis
     yield {"type": "agent_start", "agent": "synthesis"}
     synth_agent = AGENT_FACTORIES["synthesis"]()
@@ -261,12 +272,20 @@ async def _run_pre_race(
     yield {"type": "strategy_card", "strategy": synth_output.data}
     logger.info(f"Synthesis 完成")
 
+    # guardrails: 综合策略
+    synth_warnings = guardrails.validate_synthesis(synth_output.data or {})
+    if synth_warnings:
+        logger.warning(f"Guardrails [synthesis] {len(synth_warnings)} 条警告: {'; '.join(synth_warnings[:3])}")
+        yield {"type": "guardrails_warning", "agent": "synthesis", "warnings": synth_warnings}
+
     # Step 5: 保存轨迹
     state = {
         "season": season,
         "round": round_num,
         "race_data": race_data,
         "prompt": prompt,
+        "team": intent.team,
+        "driver": intent.driver,
     }
     agent_outputs = {
         name: (out.data if hasattr(out, "data") else out)
@@ -380,42 +399,104 @@ async def _run_post_race(intent, prompt, event_queue, memory):
 
 
 def _compute_reward(prediction: dict, actual: dict) -> float:
-    """根据预测和实际结果计算奖励。
+    """4 维度奖励规则：
 
-    奖励规则：
-    - 冠军预测正确: +1.0
-    - 策略类型匹配（一停/二停）: +0.5
-    - 进站窗口接近实际: +0.3  (如果实际进站在预测窗口内)
-    - 完赛名次偏差惩罚: -0.2 * |delta_position|
+    冠军正确     +1.0
+    策略类型匹配  +0.5
+    进站窗匹配    +0.3（每圈命中额外 +0.1，上限 0.5）
+    名次偏差惩罚  -0.2 × |Δpos|
+
+    匹配目标车手：优先从 trace state 的 driver 字段，其次从 actual results
+    的名字中模糊匹配 prediction 文本里出现的车手名。
     """
-    reward = 0.0
+    import re
 
-    pred_strategy = prediction.get("recommended_strategy", "").lower()
+    reward = 0.0
+    pred_strategy_text = prediction.get("recommended_strategy", "")
     pred_position = prediction.get("predicted_position", "")
 
-    # 策略类型
-    if "actual_strategy" in actual:
-        actual_strat = actual["actual_strategy"].lower()
-        if "一停" in pred_strategy and "一停" in actual_strat:
-            reward += 0.5
-        elif "二停" in pred_strategy and "二停" in actual_strat:
-            reward += 0.5
-
-    # 实际比赛结果中的冠军
+    # ---- 确定目标车手 ----
+    # prediction 本身没有 driver 字段（synthesis agent 不知道），但 trace state 有
+    # _compute_reward 调用方会把 trace 的 state["driver"] 透传进来，此处通过
+    # actual dict 已包含 results → 取冠军作为默认对比对象
     results = actual.get("results", [])
-    if results:
-        winner = results[0].get("driver", "")
-        if pred_position:
-            # 名次偏差
-            pos_map = {"P1": 1, "P2": 2, "P3": 3, "P4": 4, "P5": 5}
-            pred_pos = pos_map.get(pred_position, 0)
-            actual_pos = 1  # winner is P1
-            if pred_pos == actual_pos:
-                reward += 1.0
-            elif pred_pos > 0:
-                reward += max(-1.0, 0.5 - 0.2 * abs(pred_pos - actual_pos))
+    strategies = actual.get("strategies", {})
+    if not results:
+        return 0.0
+
+    # ---- 1. 冠军预测 +1.0 ----
+    winner_name = results[0].get("driver", "") if results else ""
+    if winner_name and pred_position == "P1":
+        reward += 1.0
+
+    # ---- 2. 策略类型匹配 +0.5 ----
+    # 从 prediction 文本推断预测的策略类型
+    pred_stop_type = ""
+    if "一停" in pred_strategy_text:
+        pred_stop_type = "一停"
+    elif "二停" in pred_strategy_text:
+        pred_stop_type = "二停"
+    elif "三停" in pred_strategy_text:
+        pred_stop_type = "三停"
+
+    # 取冠军的实际策略作为对比（因为 prediction 没绑定具体 driver）
+    winner_entry = results[0]
+    winner_code = winner_entry.get("driver_code", "")
+    if winner_code and strategies:
+        winner_strategy = strategies.get(winner_code)
+        if winner_strategy and pred_stop_type:
+            if winner_strategy.get("strategy") == pred_stop_type:
+                reward += 0.5
+
+    # ---- 3. 进站窗口匹配 +0.3~0.5 ----
+    pit_window_str = prediction.get("pit_window", "")
+    pit_window = _parse_pit_window(pit_window_str)  # → (start, end) or None
+
+    if pit_window and winner_code and strategies:
+        winner_strategy = strategies.get(winner_code)
+        if winner_strategy:
+            pit_laps = winner_strategy.get("pit_laps", [])
+            if pit_laps:
+                window_start, window_end = pit_window
+                hits = sum(1 for lap in pit_laps if window_start <= lap <= window_end)
+                if hits > 0:
+                    reward += min(0.3 + 0.1 * hits, 0.5)
+
+    # ---- 4. 名次偏差惩罚 ----
+    pos_map = {"P1": 1, "P2": 2, "P3": 3, "P4": 4, "P5": 5,
+               "P6": 6, "P7": 7, "P8": 8, "P9": 9, "P10": 10}
+    pred_pos = pos_map.get(pred_position, 0)
+    if pred_pos > 0 and winner_name and results:
+        # 找冠军在 results 中的实际位置（冠军 position=1）
+        winner_actual_pos = next(
+            (r.get("position", 99) for r in results if r.get("driver") == winner_name),
+            None,
+        )
+        if winner_actual_pos is not None and isinstance(winner_actual_pos, int) and winner_actual_pos <= 20:
+            delta = abs(pred_pos - winner_actual_pos)
+            reward += max(-1.0, -0.2 * delta)
 
     return round(reward, 2)
+
+
+def _parse_pit_window(text: str) -> tuple[int, int] | None:
+    """从中文 pit window 文本中提取 (start, end) 圈数。
+
+    Examples:
+        "第20-26圈"  → (20, 26)
+        "第15圈"     → (15, 15)
+        "第30-35"    → (30, 35)
+    """
+    import re
+
+    match = re.search(r"(\d+)\s*[-–—到至]\s*(\d+)", text)
+    if match:
+        return (int(match.group(1)), int(match.group(2)))
+    match = re.search(r"(\d+)", text)
+    if match:
+        lap = int(match.group(1))
+        return (lap, lap)
+    return None
 
 
 async def _run_follow_up(intent, prompt, event_queue, memory):

@@ -92,6 +92,7 @@ export type SSEEvent =
       extracted: Record<string, string | number | null>;
       missing: ClarificationField[];
     }
+  | { type: "guardrails_warning"; agent: string; warnings: string[] }
   | { type: "complete"; elapsed_s?: number; usage?: { input_tokens?: number; output_tokens?: number } }
   | { type: "error"; message: string };
 
@@ -128,6 +129,7 @@ export interface ChatMessage {
   strategy?: StrategyData;
   comparison?: ComparisonData;
   clarification?: ClarificationData;
+  guardrailsWarnings?: string[];
   toolActivity?: ToolActivity[];
 }
 
