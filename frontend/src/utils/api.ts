@@ -1,6 +1,7 @@
 import type { ChatRequest, SessionSummary, SessionDetail } from "../types";
 
-const API_BASE = "/api";
+// 公网部署时直接使用后端 URL，开发环境用 vite proxy
+const API_BASE = import.meta.env.VITE_API_URL || "/api";
 
 export async function postChat(request: ChatRequest): Promise<Response> {
   return fetch(`${API_BASE}/chat`, {
