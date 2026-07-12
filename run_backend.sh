@@ -13,4 +13,4 @@ echo "API 地址: http://localhost:8000"
 echo "健康检查: http://localhost:8000/api/health"
 echo ""
 
-./venv/bin/uvicorn backend.main:app --reload --port 8000 --log-level info
+./venv/bin/uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000 --log-level info
