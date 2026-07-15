@@ -2,10 +2,41 @@
 
 import asyncio
 import json
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
+from .harness.orchestrator import handle_prompt
+from .harness.logger import get_logger
+from .memory.manager import MemoryManager
+from .memory import session_store
+from .config import FRONTEND_API_KEY
+
+logger = get_logger(__name__)
+
+app = FastAPI(title="F1 策略助手")
+
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 临时允许所有来源，生产环境应限制
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ---- 鉴权 ----
+
+async def require_api_key(x_api_key: str | None = Header(default=None)):
+    """校验 X-API-Key header。若 FRONTEND_API_KEY 未配置则跳过。"""
+    if FRONTEND_API_KEY is None:
+        return
+    if x_api_key != FRONTEND_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
 
 from .harness.orchestrator import handle_prompt
 from .harness.logger import get_logger
@@ -53,6 +84,11 @@ class UpdateTitleRequest(BaseModel):
     title: str
 
 
+class FeedbackRequest(BaseModel):
+    message_id: str
+    feedback_type: str  # "like" | "dislike" | None
+
+
 # ---- 端点 ----
 
 @app.get("/api/health")
@@ -61,13 +97,13 @@ async def health():
 
 
 @app.get("/api/sessions")
-async def list_sessions():
+async def list_sessions(_: None = Depends(require_api_key)):
     """列出所有会话（按更新时间倒序）。"""
     return {"sessions": session_store.list_sessions()}
 
 
 @app.get("/api/sessions/{session_id}")
-async def get_session(session_id: str):
+async def get_session(session_id: str, _: None = Depends(require_api_key)):
     """获取会话完整消息历史。"""
     session = session_store.get_session(session_id)
     if session is None:
@@ -76,14 +112,14 @@ async def get_session(session_id: str):
 
 
 @app.post("/api/sessions")
-async def create_session(request: CreateSessionRequest):
+async def create_session(request: CreateSessionRequest, _: None = Depends(require_api_key)):
     """显式创建新会话（可选，POST /api/chat 也会自动创建）。"""
     session = session_store.create_session(title=request.title or "新对话")
     return session
 
 
 @app.delete("/api/sessions/{session_id}")
-async def delete_session(session_id: str):
+async def delete_session(session_id: str, _: None = Depends(require_api_key)):
     """删除会话。"""
     if session_store.delete_session(session_id):
         memory_cache.pop(session_id, None)
@@ -92,15 +128,33 @@ async def delete_session(session_id: str):
 
 
 @app.patch("/api/sessions/{session_id}")
-async def update_session_title(session_id: str, request: UpdateTitleRequest):
+async def update_session_title(session_id: str, request: UpdateTitleRequest, _: None = Depends(require_api_key)):
     """更新会话标题。"""
     if session_store.update_title(session_id, request.title):
         return {"updated": True, "id": session_id, "title": request.title}
     raise HTTPException(status_code=404, detail="Session not found")
 
 
+@app.post("/api/sessions/{session_id}/feedback")
+async def set_message_feedback(session_id: str, request: FeedbackRequest, _: None = Depends(require_api_key)):
+    """设置消息的用户反馈（点赞/点踩）。"""
+    if request.feedback_type not in ("like", "dislike", None):
+        raise HTTPException(status_code=400, detail="Invalid feedback_type")
+
+    feedback_type = request.feedback_type if request.feedback_type else None
+    if session_store.set_feedback(session_id, request.message_id, feedback_type):
+        return {"success": True, "feedback_type": feedback_type}
+    raise HTTPException(status_code=404, detail="Session or message not found")
+
+
+@app.get("/api/feedback/stats")
+async def get_feedback_stats(_: None = Depends(require_api_key)):
+    """获取反馈统计（用于 RLHF）。"""
+    return session_store.get_feedback_stats()
+
+
 @app.get("/api/traces")
-async def list_traces(season: int | None = None):
+async def list_traces(season: int | None = None, _: None = Depends(require_api_key)):
     """列出已保存的预测轨迹和准确率统计。"""
     from .memory.trace_store import list_traces as _list, compute_accuracy
     return {
@@ -110,7 +164,7 @@ async def list_traces(season: int | None = None):
 
 
 @app.post("/api/chat")
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, _: None = Depends(require_api_key)):
     """核心端点：接收用户 prompt，SSE 流式返回 Agent 分析结果。"""
     # 自动创建或获取会话
     if request.session_id and session_store.session_exists(request.session_id):

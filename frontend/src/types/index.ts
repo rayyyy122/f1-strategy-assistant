@@ -118,6 +118,11 @@ export interface ToolActivity {
   status: "calling" | "done";
 }
 
+export interface Feedback {
+  type: "like" | "dislike";
+  timestamp: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: MessageRole;
@@ -132,6 +137,7 @@ export interface ChatMessage {
   clarification?: ClarificationData;
   guardrailsWarnings?: string[];
   toolActivity?: ToolActivity[];
+  feedback?: Feedback;
 }
 
 // ---- 会话相关 ----
@@ -153,6 +159,7 @@ export interface SessionDetail {
 }
 
 export interface StoredMessage {
+  id?: string;
   role: "user" | "assistant" | "system";
   content: string;
   timestamp: string;
@@ -160,6 +167,7 @@ export interface StoredMessage {
   data_cards?: { card_type: string; data: unknown }[];
   strategy?: StrategyData;
   comparison?: ComparisonData;
+  feedback?: Feedback;
 }
 
 let _msgId = 0;

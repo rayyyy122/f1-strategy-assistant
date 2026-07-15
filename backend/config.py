@@ -25,3 +25,6 @@ TRACE_DIR = BASE_DIR / "data" / "traces"
 # Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL") or "INFO"
 LOG_DIR = BASE_DIR / "logs"
+
+# Frontend access key (防止 /api 被公网蹭用；留空则不校验)
+FRONTEND_API_KEY = os.getenv("FRONTEND_API_KEY") or None

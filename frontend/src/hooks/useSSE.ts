@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef } from "react";
 import type { SSEEvent } from "../types";
+import { AUTH_HEADERS } from "../utils/api";
 
 export function useSSE() {
   const [isStreaming, setIsStreaming] = useState(false);
@@ -18,7 +19,7 @@ export function useSSE() {
       try {
         const response = await fetch(url, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...AUTH_HEADERS },
           body: JSON.stringify(body),
           signal: controller.signal,
         });

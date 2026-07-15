@@ -40,7 +40,7 @@ export default function App() {
 
         <main className="flex-1 overflow-hidden">
           <ChatWindow
-            sessionId={sessionId}
+            sessionId={sessionId || undefined}
             onSessionCreated={handleSessionCreated}
             onChatComplete={handleChatComplete}
           />

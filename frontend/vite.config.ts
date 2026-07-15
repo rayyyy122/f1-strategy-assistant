@@ -7,13 +7,6 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 5173,
-    allowedHosts: ['.loca.lt', '.trycloudflare.com'],
-    proxy: {
-      '/api': {
-        target: 'https://todd-bowling-forecast-upgrading.trycloudflare.com',
-        changeOrigin: true,
-        secure: false,
-      },
-    },
+    allowedHosts: ['.loca.lt', '.trycloudflare.com', '.website'],
   },
 })

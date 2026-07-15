@@ -110,7 +110,7 @@ def append_message(
     content: str,
     agent: str | None = None,
     extra: dict | None = None,
-) -> None:
+) -> str:
     """向会话追加一条消息。
 
     Args:
@@ -119,6 +119,9 @@ def append_message(
         content: 消息正文
         agent: agent 名（assistant 消息才有）
         extra: 附加字段（如 strategy/comparison/dataCard 数据）
+
+    Returns:
+        message_id: 消息唯一 ID
     """
     session = get_session(session_id)
     if session is None:
@@ -126,6 +129,7 @@ def append_message(
         session = create_session(session_id=session_id, title=generate_title_from_prompt(content) if role == "user" else "新对话")
 
     msg: dict[str, Any] = {
+        "id": f"msg_{uuid.uuid4().hex[:12]}",
         "role": role,
         "content": content,
         "timestamp": _now_iso(),
@@ -143,9 +147,73 @@ def append_message(
         session["title"] = generate_title_from_prompt(content)
 
     _save(session)
+    return msg["id"]
 
 
 def _save(session: dict) -> None:
     _ensure_dir()
     path = _session_path(session["id"])
     path.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def set_feedback(
+    session_id: str,
+    message_id: str,
+    feedback_type: str,  # "like" | "dislike" | None (取消反馈)
+) -> bool:
+    """设置消息的用户反馈。
+
+    Args:
+        session_id: 会话 ID
+        message_id: 消息 ID
+        feedback_type: "like" | "dislike" | None
+
+    Returns:
+        是否成功
+    """
+    session = get_session(session_id)
+    if session is None:
+        return False
+
+    for msg in session["messages"]:
+        if msg.get("id") == message_id:
+            if feedback_type is None:
+                msg.pop("feedback", None)
+            else:
+                msg["feedback"] = {
+                    "type": feedback_type,
+                    "timestamp": _now_iso(),
+                }
+            session["updated_at"] = _now_iso()
+            _save(session)
+            return True
+
+    return False
+
+
+def get_feedback_stats() -> dict:
+    """获取反馈统计（用于 RLHF）。"""
+    _ensure_dir()
+    total = 0
+    likes = 0
+    dislikes = 0
+
+    for filepath in SESSIONS_DIR.glob("sess_*.json"):
+        try:
+            data = json.loads(filepath.read_text(encoding="utf-8"))
+            for msg in data.get("messages", []):
+                if "feedback" in msg:
+                    total += 1
+                    if msg["feedback"]["type"] == "like":
+                        likes += 1
+                    elif msg["feedback"]["type"] == "dislike":
+                        dislikes += 1
+        except (json.JSONDecodeError, KeyError):
+            continue
+
+    return {
+        "total_feedback": total,
+        "likes": likes,
+        "dislikes": dislikes,
+        "like_rate": round(likes / total, 3) if total > 0 else 0,
+    }

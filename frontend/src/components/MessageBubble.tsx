@@ -1,8 +1,9 @@
 import { useState, memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Copy, Check, ChevronRight, ChevronDown, Wrench } from "lucide-react";
+import { Copy, Check, ChevronRight, ChevronDown, Wrench, ThumbsUp, ThumbsDown } from "lucide-react";
 import type { ChatMessage, ToolActivity } from "../types";
+import { setFeedback } from "../utils/api";
 import { DataCard } from "./DataCard";
 import { AgentThinkingBlock } from "./AgentThinkingBlock";
 import { StrategyCard } from "./StrategyCard";
@@ -10,14 +11,31 @@ import { ComparisonCard } from "./ComparisonCard";
 import { ClarificationCard } from "./ClarificationCard";
 
 export const MessageBubble = memo(function MessageBubble({
-
   message,
   onClarificationSubmit,
+  sessionId,
 }: {
   message: ChatMessage;
+  sessionId?: string;
   onClarificationSubmit?: (msgId: string, filled: Record<string, string>) => void;
 }) {
-  const { role, agent, content, thinking, isStreaming, isIntermediate, dataCard, strategy, comparison, clarification, guardrailsWarnings, toolActivity } = message;
+  const { id, role, agent, content, thinking, isStreaming, isIntermediate, dataCard, strategy, comparison, clarification, guardrailsWarnings, toolActivity, feedback } = message;
+  const [localFeedback, setLocalFeedback] = useState(feedback?.type || null);
+
+  const handleFeedback = async (type: "like" | "dislike") => {
+    if (!sessionId) return;
+
+    const newFeedback = localFeedback === type ? null : type;
+    setLocalFeedback(newFeedback);
+
+    try {
+      await setFeedback(sessionId, id, newFeedback);
+    } catch (e) {
+      console.error("Failed to set feedback:", e);
+      // 回滚
+      setLocalFeedback(feedback?.type || null);
+    }
+  };
 
   // 系统消息（居中灰色）
   if (role === "system") {
@@ -116,7 +134,37 @@ export const MessageBubble = memo(function MessageBubble({
             ) : (
               <>
                 {content && <MarkdownContent text={content} isStreaming={isStreaming} />}
-                {content && !isStreaming && <CopyButton text={content} />}
+                {content && !isStreaming && (
+                  <div className="flex items-center gap-2 mt-2">
+                    <CopyButton text={content} />
+                    {role === "agent" && sessionId && (
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => handleFeedback("like")}
+                          className={`p-1.5 rounded-lg transition-colors ${
+                            localFeedback === "like"
+                              ? "bg-green-500/20 text-green-400"
+                              : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
+                          }`}
+                          title="有用"
+                        >
+                          <ThumbsUp size={14} />
+                        </button>
+                        <button
+                          onClick={() => handleFeedback("dislike")}
+                          className={`p-1.5 rounded-lg transition-colors ${
+                            localFeedback === "dislike"
+                              ? "bg-red-500/20 text-red-400"
+                              : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
+                          }`}
+                          title="没用"
+                        >
+                          <ThumbsDown size={14} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </>
             )}
           </div>

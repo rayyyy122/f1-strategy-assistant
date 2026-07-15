@@ -5,10 +5,10 @@ import { nextMsgId } from "../types";
 import { useSSE } from "../hooks/useSSE";
 import { MessageBubble } from "./MessageBubble";
 import { SuggestedPrompts } from "./SuggestedPrompts";
-import { getSession } from "../utils/api";
+import { getSession, API_BASE } from "../utils/api";
 
 interface ChatWindowProps {
-  sessionId: string | null;
+  sessionId?: string;
   onSessionCreated?: (newId: string) => void;
   onChatComplete?: () => void;
 }
@@ -114,7 +114,7 @@ export function ChatWindow({ sessionId, onSessionCreated, onChatComplete }: Chat
     };
     if (sessionId) body.session_id = sessionId;
 
-    startStream("/api/chat", body, (event: SSEEvent) => {
+    startStream(`${API_BASE}/chat`, body, (event: SSEEvent) => {
       handleEvent(event);
     });
   };
@@ -394,6 +394,7 @@ export function ChatWindow({ sessionId, onSessionCreated, onChatComplete }: Chat
             <MessageBubble
               key={msg.id}
               message={msg}
+              sessionId={sessionId}
               onClarificationSubmit={handleClarificationSubmit}
             />
           ))}
