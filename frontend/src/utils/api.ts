@@ -1,13 +1,28 @@
 import type { ChatRequest, SessionSummary, SessionDetail } from "../types";
 
-// 硬编码后端地址，避免环境变量问题
-export const API_BASE = "https://api.fi-strategy-assistant-website.website/api";
+// 后端地址：优先读环境变量，否则回退到本地开发
+export const API_BASE =
+  (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:8000/api";
 
 // 前端访问密钥（用于防止 /api 被公网蹭用；与后端 FRONTEND_API_KEY 保持一致）
 export const FRONTEND_API_KEY = "o1c2iHuutraOhIHT5DyOMJaA39hTR6gG";
 
+// ---- Client ID（浏览器级匿名身份，用于会话隔离） ----
+
+const CLIENT_ID_KEY = "f1_client_id";
+
+export function getClientId(): string {
+  let id = localStorage.getItem(CLIENT_ID_KEY);
+  if (!id) {
+    id = `client_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+    localStorage.setItem(CLIENT_ID_KEY, id);
+  }
+  return id;
+}
+
 export const AUTH_HEADERS: Record<string, string> = {
   "X-API-Key": FRONTEND_API_KEY,
+  "X-Client-Id": getClientId(),
 };
 
 function jsonHeaders(): Record<string, string> {

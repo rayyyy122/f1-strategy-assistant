@@ -36,7 +36,11 @@ def generate_title_from_prompt(prompt: str, max_len: int = 40) -> str:
     return cleaned[:max_len].rstrip() + "..."
 
 
-def create_session(session_id: str | None = None, title: str = "新对话") -> dict:
+def create_session(
+    session_id: str | None = None,
+    title: str = "新对话",
+    owner_id: str | None = None,
+) -> dict:
     """创建新会话，返回会话元数据。"""
     _ensure_dir()
     sid = session_id or generate_session_id()
@@ -44,6 +48,7 @@ def create_session(session_id: str | None = None, title: str = "新对话") -> d
     session = {
         "id": sid,
         "title": title,
+        "owner_id": owner_id,
         "created_at": now,
         "updated_at": now,
         "messages": [],
@@ -56,21 +61,33 @@ def session_exists(session_id: str) -> bool:
     return _session_path(session_id).exists()
 
 
-def get_session(session_id: str) -> dict | None:
-    """读取完整会话（含所有消息）。"""
+def get_session(session_id: str, owner_id: str | None = None) -> dict | None:
+    """读取完整会话（含所有消息）。
+
+    若指定 owner_id，则仅当会话归属该 owner 时才返回（不匹配视为不存在）。
+    """
     path = _session_path(session_id)
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if owner_id is not None and data.get("owner_id") not in (None, owner_id):
+        return None
+    return data
 
 
-def list_sessions() -> list[dict]:
-    """列出所有会话的摘要（不含消息内容），按更新时间倒序。"""
+def list_sessions(owner_id: str | None = None) -> list[dict]:
+    """列出会话摘要（不含消息内容），按更新时间倒序。
+
+    若指定 owner_id，则只返回该 owner 的会话。历史遗留无 owner_id 的会话
+    仅在 owner_id=None 时返回。
+    """
     _ensure_dir()
     summaries = []
     for filepath in SESSIONS_DIR.glob("sess_*.json"):
         try:
             data = json.loads(filepath.read_text(encoding="utf-8"))
+            if owner_id is not None and data.get("owner_id") != owner_id:
+                continue
             summaries.append({
                 "id": data["id"],
                 "title": data.get("title", "未命名"),
@@ -85,8 +102,10 @@ def list_sessions() -> list[dict]:
     return summaries
 
 
-def delete_session(session_id: str) -> bool:
-    """删除会话文件。"""
+def delete_session(session_id: str, owner_id: str | None = None) -> bool:
+    """删除会话文件。若指定 owner_id 且不匹配则视为不存在。"""
+    if get_session(session_id, owner_id=owner_id) is None:
+        return False
     path = _session_path(session_id)
     if path.exists():
         path.unlink()
@@ -94,8 +113,8 @@ def delete_session(session_id: str) -> bool:
     return False
 
 
-def update_title(session_id: str, title: str) -> bool:
-    session = get_session(session_id)
+def update_title(session_id: str, title: str, owner_id: str | None = None) -> bool:
+    session = get_session(session_id, owner_id=owner_id)
     if session is None:
         return False
     session["title"] = title
@@ -110,6 +129,7 @@ def append_message(
     content: str,
     agent: str | None = None,
     extra: dict | None = None,
+    owner_id: str | None = None,
 ) -> str:
     """向会话追加一条消息。
 
@@ -123,10 +143,14 @@ def append_message(
     Returns:
         message_id: 消息唯一 ID
     """
-    session = get_session(session_id)
+    session = get_session(session_id, owner_id=owner_id)
     if session is None:
         # 自动创建
-        session = create_session(session_id=session_id, title=generate_title_from_prompt(content) if role == "user" else "新对话")
+        session = create_session(
+            session_id=session_id,
+            title=generate_title_from_prompt(content) if role == "user" else "新对话",
+            owner_id=owner_id,
+        )
 
     msg: dict[str, Any] = {
         "id": f"msg_{uuid.uuid4().hex[:12]}",
@@ -160,6 +184,7 @@ def set_feedback(
     session_id: str,
     message_id: str,
     feedback_type: str,  # "like" | "dislike" | None (取消反馈)
+    owner_id: str | None = None,
 ) -> bool:
     """设置消息的用户反馈。
 
@@ -171,7 +196,7 @@ def set_feedback(
     Returns:
         是否成功
     """
-    session = get_session(session_id)
+    session = get_session(session_id, owner_id=owner_id)
     if session is None:
         return False
 

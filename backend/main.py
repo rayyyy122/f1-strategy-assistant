@@ -37,6 +37,11 @@ async def require_api_key(x_api_key: str | None = Header(default=None)):
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
+async def get_client_id(x_client_id: str | None = Header(default=None)) -> str | None:
+    """提取 X-Client-Id header，用于会话归属隔离。允许为空（向后兼容）。"""
+    return x_client_id
+
+
 
 from .harness.orchestrator import handle_prompt
 from .harness.logger import get_logger
@@ -97,52 +102,80 @@ async def health():
 
 
 @app.get("/api/sessions")
-async def list_sessions(_: None = Depends(require_api_key)):
-    """列出所有会话（按更新时间倒序）。"""
-    return {"sessions": session_store.list_sessions()}
+async def list_sessions(
+    _: None = Depends(require_api_key),
+    client_id: str | None = Depends(get_client_id),
+):
+    """列出当前用户的会话（按更新时间倒序）。"""
+    return {"sessions": session_store.list_sessions(owner_id=client_id)}
 
 
 @app.get("/api/sessions/{session_id}")
-async def get_session(session_id: str, _: None = Depends(require_api_key)):
-    """获取会话完整消息历史。"""
-    session = session_store.get_session(session_id)
+async def get_session(
+    session_id: str,
+    _: None = Depends(require_api_key),
+    client_id: str | None = Depends(get_client_id),
+):
+    """获取会话完整消息历史。仅会话所有者可访问。"""
+    session = session_store.get_session(session_id, owner_id=client_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
     return session
 
 
 @app.post("/api/sessions")
-async def create_session(request: CreateSessionRequest, _: None = Depends(require_api_key)):
+async def create_session(
+    request: CreateSessionRequest,
+    _: None = Depends(require_api_key),
+    client_id: str | None = Depends(get_client_id),
+):
     """显式创建新会话（可选，POST /api/chat 也会自动创建）。"""
-    session = session_store.create_session(title=request.title or "新对话")
+    session = session_store.create_session(
+        title=request.title or "新对话",
+        owner_id=client_id,
+    )
     return session
 
 
 @app.delete("/api/sessions/{session_id}")
-async def delete_session(session_id: str, _: None = Depends(require_api_key)):
-    """删除会话。"""
-    if session_store.delete_session(session_id):
+async def delete_session(
+    session_id: str,
+    _: None = Depends(require_api_key),
+    client_id: str | None = Depends(get_client_id),
+):
+    """删除会话。仅会话所有者可删除。"""
+    if session_store.delete_session(session_id, owner_id=client_id):
         memory_cache.pop(session_id, None)
         return {"deleted": True, "id": session_id}
     raise HTTPException(status_code=404, detail="Session not found")
 
 
 @app.patch("/api/sessions/{session_id}")
-async def update_session_title(session_id: str, request: UpdateTitleRequest, _: None = Depends(require_api_key)):
-    """更新会话标题。"""
-    if session_store.update_title(session_id, request.title):
+async def update_session_title(
+    session_id: str,
+    request: UpdateTitleRequest,
+    _: None = Depends(require_api_key),
+    client_id: str | None = Depends(get_client_id),
+):
+    """更新会话标题。仅会话所有者可修改。"""
+    if session_store.update_title(session_id, request.title, owner_id=client_id):
         return {"updated": True, "id": session_id, "title": request.title}
     raise HTTPException(status_code=404, detail="Session not found")
 
 
 @app.post("/api/sessions/{session_id}/feedback")
-async def set_message_feedback(session_id: str, request: FeedbackRequest, _: None = Depends(require_api_key)):
-    """设置消息的用户反馈（点赞/点踩）。"""
+async def set_message_feedback(
+    session_id: str,
+    request: FeedbackRequest,
+    _: None = Depends(require_api_key),
+    client_id: str | None = Depends(get_client_id),
+):
+    """设置消息的用户反馈（点赞/点踩）。仅会话所有者可操作。"""
     if request.feedback_type not in ("like", "dislike", None):
         raise HTTPException(status_code=400, detail="Invalid feedback_type")
 
     feedback_type = request.feedback_type if request.feedback_type else None
-    if session_store.set_feedback(session_id, request.message_id, feedback_type):
+    if session_store.set_feedback(session_id, request.message_id, feedback_type, owner_id=client_id):
         return {"success": True, "feedback_type": feedback_type}
     raise HTTPException(status_code=404, detail="Session or message not found")
 
@@ -164,25 +197,30 @@ async def list_traces(season: int | None = None, _: None = Depends(require_api_k
 
 
 @app.post("/api/chat")
-async def chat(request: ChatRequest, _: None = Depends(require_api_key)):
+async def chat(
+    request: ChatRequest,
+    _: None = Depends(require_api_key),
+    client_id: str | None = Depends(get_client_id),
+):
     """核心端点：接收用户 prompt，SSE 流式返回 Agent 分析结果。"""
-    # 自动创建或获取会话
-    if request.session_id and session_store.session_exists(request.session_id):
+    # 自动创建或获取会话（校验归属）
+    if request.session_id and session_store.get_session(request.session_id, owner_id=client_id):
         session_id = request.session_id
         is_new_session = False
     else:
         new_session = session_store.create_session(
             title=session_store.generate_title_from_prompt(request.prompt),
+            owner_id=client_id,
         )
         session_id = new_session["id"]
         is_new_session = True
 
     memory = get_or_create_memory(session_id)
 
-    logger.info(f"POST /api/chat session={session_id} new={is_new_session} prompt={request.prompt[:80]}...")
+    logger.info(f"POST /api/chat session={session_id} new={is_new_session} client={client_id} prompt={request.prompt[:80]}...")
 
     # 立即持久化用户消息
-    session_store.append_message(session_id, role="user", content=request.prompt)
+    session_store.append_message(session_id, role="user", content=request.prompt, owner_id=client_id)
 
     # 收集 assistant 输出，用于持久化
     assistant_text_parts: list[str] = []
@@ -255,6 +293,7 @@ async def chat(request: ChatRequest, _: None = Depends(require_api_key)):
                     role="assistant",
                     content=assistant_content,
                     extra=extra or None,
+                    owner_id=client_id,
                 )
             except Exception as e:
                 logger.error(f"持久化失败: {e}")
