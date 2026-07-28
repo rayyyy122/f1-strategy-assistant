@@ -654,6 +654,16 @@ def _parse_pit_window(text: str) -> tuple[int, int] | None:
     """
     import re
 
+    # 处理 None 或非字符串输入
+    if text is None:
+        return None
+
+    # 转换为字符串
+    text = str(text).strip()
+
+    if not text:
+        return None
+
     match = re.search(r"(\d+)\s*[-–—到至]\s*(\d+)", text)
     if match:
         return (int(match.group(1)), int(match.group(2)))
