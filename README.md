@@ -21,8 +21,10 @@ cd frontend && npm run dev
   - Build output: `frontend/dist`
   - 域名: <https://fi-strategy-assistant-website.website>
   - 生产 API 地址按 `import.meta.env.PROD` 在 `frontend/src/utils/api.ts` 中注入，无需控制台额外配置
-- **后端 — 本机 + Cloudflare 命名 Tunnel**：`./run_all.sh`（或 `run_backend.sh`）启动后，经 cloudflared 系统服务暴露为 <https://api.fi-strategy-assistant-website.website>
-  - 后端 API 变更需要在本机重启服务才会生效，不会自动部署
+- **后端 — VPS + Cloudflare 命名 Tunnel**：FastAPI 跑在 VPS 上（systemd 服务 `f1-backend`，仅监听 `127.0.0.1:8000`），经命名隧道暴露为 <https://api.fi-strategy-assistant-website.website>
+  - VPS 初始化：克隆仓库后 `sudo bash deploy/vps-setup.sh [cloudflared-token]`
+  - 后端 API 变更：push 后在 VPS 上 `git pull && systemctl restart f1-backend`（手动部署，不自动）
+  - 查看日志：`journalctl -u f1-backend -f`
 
 ## 架构
 
