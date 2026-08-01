@@ -17,6 +17,12 @@ data/
 # Environment
 .env
 .env.local
+.env.production
+
+# Local binaries / env scripts (not project code)
+ngrok
+frontend/caddy_*.zip
+claude_code_env.sh
 
 # IDE
 .idea/
