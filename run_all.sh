@@ -52,10 +52,10 @@ echo "  F1 策略助手 — 一键启动"
 echo "=========================================="
 echo ""
 
-# ---- 配置前端环境变量（固定域名）----
+# ---- 配置前端环境变量（本地开发直连本地后端）----
 info "配置前端环境变量..."
-echo "VITE_API_URL=https://api.fi-strategy-assistant-website.website/api" > frontend/.env
-ok "frontend/.env 已更新"
+echo "VITE_API_URL=http://localhost:8000/api" > frontend/.env
+ok "frontend/.env 已更新（本地开发）"
 
 # ---- 启动后端 ----
 info "启动后端 (localhost:8000)..."
@@ -93,15 +93,17 @@ echo ""
 ok "后端本地:  http://localhost:8000"
 ok "前端本地:  http://localhost:5173"
 echo ""
-ok "前端公网:  https://fi-strategy-assistant-website.website"
-ok "后端公网:  https://api.fi-strategy-assistant-website.website"
+ok "后端公网:  https://api.fi-strategy-assistant-website.website (Cloudflare 命名隧道)"
+echo ""
+echo "前端公网由 Cloudflare Pages 托管（push 到 main 自动部署）:"
+echo "  https://fi-strategy-assistant-website.website"
 echo ""
 echo "=========================================="
 echo "  重要提示"
 echo "=========================================="
 echo ""
-echo "1. 使用 Cloudflare 命名 Tunnel，域名固定不变"
-echo "2. 确保 cloudflared 服务已安装并运行（之前已配置）"
+echo "1. 本脚本用于本地开发；前端线上由 Cloudflare Pages 自动部署"
+echo "2. 后端公网走 Cloudflare 命名 Tunnel，确保 cloudflared 服务在运行"
 echo "3. 按 Ctrl+C 停止所有服务"
 echo ""
 

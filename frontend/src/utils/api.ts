@@ -1,8 +1,11 @@
 import type { ChatRequest, SessionSummary, SessionDetail } from "../types";
 
-// 后端地址：优先读环境变量，否则回退到本地开发
+// 后端地址：优先读环境变量；生产构建回退到公网 API，开发回退到本地
 export const API_BASE =
-  (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:8000/api";
+  (import.meta.env.VITE_API_URL as string | undefined) ??
+  (import.meta.env.PROD
+    ? "https://api.fi-strategy-assistant-website.website/api"
+    : "http://localhost:8000/api");
 
 // 前端访问密钥（用于防止 /api 被公网蹭用；与后端 FRONTEND_API_KEY 保持一致）
 export const FRONTEND_API_KEY = "o1c2iHuutraOhIHT5DyOMJaA39hTR6gG";

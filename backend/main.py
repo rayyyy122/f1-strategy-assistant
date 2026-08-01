@@ -17,10 +17,15 @@ logger = get_logger(__name__)
 
 app = FastAPI(title="F1 策略助手")
 
-# CORS
+# CORS：仅允许 Pages 正式/预览域名与本地开发
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 临时允许所有来源，生产环境应限制
+    allow_origins=[
+        "https://fi-strategy-assistant-website.website",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_origin_regex=r"https://.*\.pages\.dev",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -42,24 +47,6 @@ async def get_client_id(x_client_id: str | None = Header(default=None)) -> str |
     return x_client_id
 
 
-
-from .harness.orchestrator import handle_prompt
-from .harness.logger import get_logger
-from .memory.manager import MemoryManager
-from .memory import session_store
-
-logger = get_logger(__name__)
-
-app = FastAPI(title="F1 策略助手")
-
-# CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # 临时允许所有来源，生产环境应限制
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # 进行中的 MemoryManager 缓存（运行时内存状态，与磁盘 session_store 分开）
 memory_cache: dict[str, MemoryManager] = {}
