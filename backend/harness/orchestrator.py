@@ -525,7 +525,8 @@ async def _run_post_race(intent, prompt, event_queue, memory):
 
     # 如果之前有预测，计算奖励并回填
     if trace_id and prediction:
-        reward = _compute_reward(prediction, actual)
+        target_driver = (trace.get("state") or {}).get("driver", "") if trace else ""
+        reward = _compute_reward(prediction, actual, target_driver=target_driver)
         from ..memory.trace_store import backfill_outcome
         backfill_outcome(trace_id, actual, reward)
         comparison["reward"] = reward
@@ -563,39 +564,55 @@ async def _run_post_race(intent, prompt, event_queue, memory):
     logger.info(f"Post-race 复盘完成: {season} R{round_num}")
 
 
-def _compute_reward(prediction: dict, actual: dict) -> float:
-    """4 维度奖励规则：
+def _compute_reward(prediction: dict, actual: dict, target_driver: str = "") -> float:
+    """4 维度奖励规则（对比对象为预测的目标车手）：
 
-    冠军正确     +1.0
-    策略类型匹配  +0.5
-    进站窗匹配    +0.3（每圈命中额外 +0.1，上限 0.5）
-    名次偏差惩罚  -0.2 × |Δpos|
+    冠军预测正确  +1.0（预测目标车手 P1 完赛，且其确实夺冠）
+    策略类型匹配  +0.5（停站次数与目标车手实际策略一致）
+    进站窗口匹配  +0.3（实际进站每命中窗口一次额外 +0.1，上限 0.5）
+    名次偏差惩罚  -0.2 × |预测名次 - 目标车手实际名次|（下限 -1.0）
 
-    匹配目标车手：优先从 trace state 的 driver 字段，其次从 actual results
-    的名字中模糊匹配 prediction 文本里出现的车手名。
+    若无法在实际结果中匹配到目标车手（如轨迹里是中文名），
+    回退为与冠军对比（与历史行为一致）。
     """
     import re
 
     reward = 0.0
-    pred_strategy_text = prediction.get("recommended_strategy", "")
-    pred_position = prediction.get("predicted_position", "")
+    pred_strategy_text = prediction.get("recommended_strategy", "") or ""
+    pred_position_raw = str(prediction.get("predicted_position", "") or "")
 
-    # ---- 确定目标车手 ----
-    # prediction 本身没有 driver 字段（synthesis agent 不知道），但 trace state 有
-    # _compute_reward 调用方会把 trace 的 state["driver"] 透传进来，此处通过
-    # actual dict 已包含 results → 取冠军作为默认对比对象
     results = actual.get("results", [])
     strategies = actual.get("strategies", {})
     if not results:
         return 0.0
 
-    # ---- 1. 冠军预测 +1.0 ----
-    winner_name = results[0].get("driver", "") if results else ""
-    if winner_name and pred_position == "P1":
+    def _norm(s: str) -> str:
+        return re.sub(r"[^a-z]", "", (s or "").lower())
+
+    # ---- 解析预测名次（兼容 "P2（最佳P1，最差P4）" 等格式）----
+    m = re.search(r"P(\d+)", pred_position_raw)
+    pred_pos = int(m.group(1)) if m else 0
+
+    # ---- 定位对比对象：目标车手，匹配不到则回退到冠军 ----
+    target_entry = None
+    if target_driver:
+        norm_target = _norm(target_driver)
+        if norm_target:
+            target_entry = next(
+                (r for r in results if _norm(str(r.get("driver", ""))) == norm_target),
+                None,
+            )
+    if target_entry is None:
+        target_entry = results[0]  # 回退：与冠军对比
+
+    target_code = target_entry.get("driver_code", "")
+    target_actual_pos = target_entry.get("position", 99)
+
+    # ---- 1. 冠军预测 +1.0（目标车手确实是冠军才算）----
+    if pred_pos == 1 and target_entry is results[0]:
         reward += 1.0
 
-    # ---- 2. 策略类型匹配 +0.5 ----
-    # 从 prediction 文本推断预测的策略类型
+    # ---- 2. 策略类型匹配 +0.5（与目标车手实际策略对比）----
     pred_stop_type = ""
     if "一停" in pred_strategy_text:
         pred_stop_type = "一停"
@@ -604,42 +621,31 @@ def _compute_reward(prediction: dict, actual: dict) -> float:
     elif "三停" in pred_strategy_text:
         pred_stop_type = "三停"
 
-    # 取冠军的实际策略作为对比（因为 prediction 没绑定具体 driver）
-    winner_entry = results[0]
-    winner_code = winner_entry.get("driver_code", "")
-    if winner_code and strategies:
-        winner_strategy = strategies.get(winner_code)
-        if winner_strategy and pred_stop_type:
-            if winner_strategy.get("strategy") == pred_stop_type:
-                reward += 0.5
+    target_strategy = strategies.get(target_code) if target_code and strategies else None
+    if target_strategy and pred_stop_type:
+        if target_strategy.get("strategy") == pred_stop_type:
+            reward += 0.5
 
-    # ---- 3. 进站窗口匹配 +0.3~0.5 ----
-    pit_window_str = prediction.get("pit_window", "")
-    pit_window = _parse_pit_window(pit_window_str)  # → (start, end) or None
+    # ---- 3. 进站窗口匹配 +0.3~0.5（兼容 dict 格式的多停窗口）----
+    pit_window_value = prediction.get("pit_window", "")
+    window_texts = (
+        list(pit_window_value.values()) if isinstance(pit_window_value, dict) else [pit_window_value]
+    )
+    pit_windows = [w for w in (_parse_pit_window(t) for t in window_texts) if w]
 
-    if pit_window and winner_code and strategies:
-        winner_strategy = strategies.get(winner_code)
-        if winner_strategy:
-            pit_laps = winner_strategy.get("pit_laps", [])
-            if pit_laps:
-                window_start, window_end = pit_window
-                hits = sum(1 for lap in pit_laps if window_start <= lap <= window_end)
-                if hits > 0:
-                    reward += min(0.3 + 0.1 * hits, 0.5)
-
-    # ---- 4. 名次偏差惩罚 ----
-    pos_map = {"P1": 1, "P2": 2, "P3": 3, "P4": 4, "P5": 5,
-               "P6": 6, "P7": 7, "P8": 8, "P9": 9, "P10": 10}
-    pred_pos = pos_map.get(pred_position, 0)
-    if pred_pos > 0 and winner_name and results:
-        # 找冠军在 results 中的实际位置（冠军 position=1）
-        winner_actual_pos = next(
-            (r.get("position", 99) for r in results if r.get("driver") == winner_name),
-            None,
+    if pit_windows and target_strategy:
+        pit_laps = target_strategy.get("pit_laps", [])
+        hits = sum(
+            1 for lap in pit_laps
+            if any(start <= lap <= end for start, end in pit_windows)
         )
-        if winner_actual_pos is not None and isinstance(winner_actual_pos, int) and winner_actual_pos <= 20:
-            delta = abs(pred_pos - winner_actual_pos)
-            reward += max(-1.0, -0.2 * delta)
+        if hits > 0:
+            reward += min(0.3 + 0.1 * hits, 0.5)
+
+    # ---- 4. 名次偏差惩罚（与目标车手实际名次对比）----
+    if pred_pos > 0 and isinstance(target_actual_pos, int) and 1 <= target_actual_pos <= 20:
+        delta = abs(pred_pos - target_actual_pos)
+        reward += max(-1.0, -0.2 * delta)
 
     return round(reward, 2)
 
@@ -661,7 +667,7 @@ def _parse_pit_window(text: str) -> tuple[int, int] | None:
     # 转换为字符串
     text = str(text).strip()
 
-    if not text:
+    if not text or not isinstance(text, str):
         return None
 
     match = re.search(r"(\d+)\s*[-–—到至]\s*(\d+)", text)

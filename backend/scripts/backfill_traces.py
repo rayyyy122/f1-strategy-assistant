@@ -15,8 +15,11 @@ from backend.tools.strategy_tools import _load_actual_race_result
 from backend.harness.orchestrator import _compute_reward
 
 
-async def backfill_single_trace(trace_id: str, dry_run: bool = False) -> tuple[bool, str]:
+async def backfill_single_trace(trace_id: str, dry_run: bool = False, force: bool = False) -> tuple[bool, str]:
     """回填单条轨迹。
+
+    force=True 时用已存的 actual_outcome 重新计算 reward（不重新加载 FastF1），
+    用于 reward 规则变更后的全量重算。
 
     Returns:
         (success, message)
@@ -25,7 +28,8 @@ async def backfill_single_trace(trace_id: str, dry_run: bool = False) -> tuple[b
     if not trace:
         return (False, f"轨迹 {trace_id} 不存在")
 
-    if trace.get("actual_outcome") is not None:
+    actual = trace.get("actual_outcome")
+    if actual is not None and not force:
         return (True, "已回填")
 
     season = trace.get("season")
@@ -34,15 +38,17 @@ async def backfill_single_trace(trace_id: str, dry_run: bool = False) -> tuple[b
     if not season or not round_num:
         return (False, "缺少 season 或 round")
 
-    # 加载实际结果
-    actual = await _load_actual_race_result(season, round_num)
+    if actual is None or "error" in actual or not actual.get("results"):
+        # 首次回填：从 FastF1 加载实际结果
+        actual = await _load_actual_race_result(season, round_num)
 
-    if "error" in actual or not actual.get("results"):
-        return (False, f"未找到 {season} R{round_num} 的比赛结果: {actual.get('error', '未知错误')}")
+        if "error" in actual or not actual.get("results"):
+            return (False, f"未找到 {season} R{round_num} 的比赛结果: {actual.get('error', '未知错误')}")
 
-    # 计算奖励
+    # 计算奖励（对比对象为轨迹的目标车手）
+    driver = (trace.get("state") or {}).get("driver", "")
     final_prediction = trace.get("final_prediction", {})
-    reward = _compute_reward(final_prediction, actual)
+    reward = _compute_reward(final_prediction, actual, target_driver=driver)
 
     message = f"赛季 {season} R{round_num}: reward={reward}, 来源={actual.get('source')}"
 
@@ -58,6 +64,7 @@ async def backfill_all_traces(
     season: int | None = None,
     dry_run: bool = False,
     verbose: bool = True,
+    force: bool = False,
 ) -> dict[str, Any]:
     """批量回填所有轨迹。
 
@@ -65,6 +72,7 @@ async def backfill_all_traces(
         season: 指定赛季，None 表示所有赛季
         dry_run: 是否只模拟不实际写入
         verbose: 是否打印详细信息
+        force: 是否强制重算 reward（复用已存 actual_outcome）
 
     Returns:
         统计信息
@@ -90,7 +98,7 @@ async def backfill_all_traces(
         if verbose:
             print(f"处理轨迹: {trace_id}...", end=" ")
 
-        success, message = await backfill_single_trace(trace_id, dry_run)
+        success, message = await backfill_single_trace(trace_id, dry_run, force=force)
 
         if success:
             if "已回填" in message:
@@ -143,18 +151,20 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true", help="模拟运行，不实际写入")
     parser.add_argument("--trace-id", type=str, help="指定单条轨迹 ID")
     parser.add_argument("--verbose", action="store_true", default=True, help="打印详细信息")
+    parser.add_argument("--force", action="store_true", help="强制重算 reward（复用已存结果，用于规则变更后）")
 
     args = parser.parse_args()
 
     async def main():
         if args.trace_id:
-            success, message = await backfill_single_trace(args.trace_id, args.dry_run)
+            success, message = await backfill_single_trace(args.trace_id, args.dry_run, force=args.force)
             print(f"{'[DRY RUN] ' if args.dry_run else ''}{message}")
         else:
             results = await backfill_all_traces(
                 season=args.season,
                 dry_run=args.dry_run,
                 verbose=args.verbose,
+                force=args.force,
             )
             print_summary(results)
 
