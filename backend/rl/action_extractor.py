@@ -65,10 +65,12 @@ def extract_action(agent_outputs: dict[str, Any]) -> StrategyAction:
 
     # 如果 synthesis 有更详细的信息，优先使用
     if synthesis_output:
-        # 尝试从 synthesis 文本中解析
-        pit_window_str = synthesis_output.get("pit_window", "")
-        if pit_window_str:
-            parsed = _parse_pit_window(pit_window_str)
+        # 尝试从 synthesis 中解析；新格式 pit_window 为按停站拆分的 dict，取第一停
+        pit_window_value = synthesis_output.get("pit_window", "")
+        if isinstance(pit_window_value, dict):
+            pit_window_value = next(iter(pit_window_value.values()), "")
+        if pit_window_value:
+            parsed = _parse_pit_window(pit_window_value)
             if parsed:
                 pit_window_start, pit_window_end = parsed
 
@@ -135,7 +137,7 @@ def _normalize_strategy_type(strategy_type: str) -> str:
 
 def _parse_pit_window(text: str) -> tuple[int, int] | None:
     """从文本中提取进站窗口。"""
-    if not text:
+    if not text or not isinstance(text, str):
         return None
 
     # 尝试匹配范围 "第20-26圈"
@@ -154,7 +156,7 @@ def _parse_pit_window(text: str) -> tuple[int, int] | None:
 
 def _parse_strategy_type(text: str) -> str | None:
     """从文本中解析策略类型。"""
-    if not text:
+    if not text or not isinstance(text, str):
         return None
 
     if "一停" in text or "1 stop" in text or "1stop" in text:
@@ -197,7 +199,7 @@ def extract_risk_factors(synthesis_output: dict[str, Any]) -> dict[str, float]:
 
 def _parse_probability(prob_str: str) -> float:
     """从字符串中解析概率。"""
-    if not prob_str:
+    if not prob_str or not isinstance(prob_str, str):
         return 50.0
 
     # 提取数字
