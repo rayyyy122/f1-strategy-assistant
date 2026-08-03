@@ -223,7 +223,10 @@ async def main() -> None:
     for r in results:
         if not r.get("trace_id"):
             continue
-        ok, reward, err = await backfill_new(r["trace_id"])
+        try:
+            ok, reward, err = await asyncio.wait_for(backfill_new(r["trace_id"]), timeout=600)
+        except asyncio.TimeoutError:
+            ok, reward, err = False, None, "回填超时（600s），可用 backfill_traces.py 续传"
         r["reward"] = reward
         print(f"  {r['trace_id']}: {'reward=' + f'{reward:.2f}' if ok else '回填失败: ' + err}", flush=True)
 

@@ -98,7 +98,12 @@ async def backfill_all_traces(
         if verbose:
             print(f"处理轨迹: {trace_id}...", end=" ")
 
-        success, message = await backfill_single_trace(trace_id, dry_run, force=force)
+        try:
+            success, message = await asyncio.wait_for(
+                backfill_single_trace(trace_id, dry_run, force=force), timeout=600
+            )
+        except asyncio.TimeoutError:
+            success, message = False, "回填超时（600s），稍后可重跑续传"
 
         if success:
             if "已回填" in message:
