@@ -803,10 +803,25 @@ def _routing_message(intent: Intent) -> str:
             return f"识别为：{intent.mode}"
 
 
-async def _load_race_data(season: int, round_num: int) -> dict:
-    """加载比赛数据（赛道 + 天气）。"""
-    from ..data import jolpica_client
+def _load_practice_data_sync(season: int, round_num: int) -> tuple[dict, dict]:
+    """同步加载练习赛天气 + 长距离数据（放入 worker 线程运行，避免阻塞事件循环）。"""
     from ..data import fastf1_client
+
+    weather = {}
+    longruns = {}
+    for st in ["FP1", "FP2", "FP3"]:
+        try:
+            session = fastf1_client.load_session(season, round_num, st)
+            weather[st] = fastf1_client.get_weather_data(session)
+            longruns[st] = fastf1_client.get_practice_longruns(session)
+        except Exception:
+            continue
+    return weather, longruns
+
+
+async def _load_race_data(season: int, round_num: int) -> dict:
+    """加载比赛数据（赛道 + 天气 + 排位 + 长距离）。"""
+    from ..data import jolpica_client
 
     data = {}
 
@@ -817,16 +832,12 @@ async def _load_race_data(season: int, round_num: int) -> dict:
     except Exception as e:
         logger.warning(f"赛道信息加载失败: {e}")
 
-    # 天气（从练习赛）
-    weather = {}
-    for st in ["FP1", "FP2", "FP3"]:
-        try:
-            session = fastf1_client.load_session(season, round_num, st)
-            weather[st] = fastf1_client.get_weather_data(session)
-        except Exception:
-            continue
+    # 天气 + 练习赛长距离（FastF1 为同步阻塞 IO，放入线程，保证超时可以生效）
+    weather, longruns = await asyncio.to_thread(_load_practice_data_sync, season, round_num)
     if weather:
         data["weather"] = weather
+    if longruns:
+        data["practice_longruns"] = longruns
 
     # 排位赛
     try:
@@ -834,17 +845,6 @@ async def _load_race_data(season: int, round_num: int) -> dict:
         data["qualifying"] = qualifying[:10] if qualifying else []
     except Exception as e:
         logger.warning(f"排位赛数据加载失败: {e}")
-
-    # 练习赛长距离
-    longruns = {}
-    for st in ["FP1", "FP2", "FP3"]:
-        try:
-            session = fastf1_client.load_session(season, round_num, st)
-            longruns[st] = fastf1_client.get_practice_longruns(session)
-        except Exception:
-            continue
-    if longruns:
-        data["practice_longruns"] = longruns
 
     return data
 

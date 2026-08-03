@@ -293,9 +293,9 @@ class BaseAgent:
                 except asyncio.QueueFull:
                     pass
 
-            # 执行工具
+            # 执行工具（同步工具放入线程，避免 FastF1 下载等阻塞 IO 卡住事件循环）
             try:
-                result = registry.execute(tool_name, args)
+                result = await asyncio.to_thread(registry.execute, tool_name, args)
                 if asyncio.iscoroutine(result):
                     result = await result
             except ValueError as e:

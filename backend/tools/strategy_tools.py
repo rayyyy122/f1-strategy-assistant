@@ -2,6 +2,7 @@
 
 import json
 import math
+import asyncio
 from pathlib import Path
 from .registry import registry
 from ..data import fastf1_client, jolpica_client
@@ -125,7 +126,7 @@ async def _load_actual_race_result(year: int, round_num: int) -> dict:
     进站策略通过 session.laps 的 Compound 切换自动推算。
     """
     try:
-        session = fastf1_client.load_session(year, round_num, "R")
+        session = await asyncio.to_thread(fastf1_client.load_session, year, round_num, "R")
     except Exception as e:
         return {"error": f"加载比赛 session 失败 ({year} R{round_num}): {e}"}
 
