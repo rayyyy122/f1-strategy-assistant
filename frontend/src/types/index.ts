@@ -71,6 +71,7 @@ export interface ClarificationData {
   message: string;
   extracted: Record<string, string | number | null>;
   missing: ClarificationField[];
+  mode?: string;
 }
 
 export type SSEEvent =
@@ -91,6 +92,7 @@ export type SSEEvent =
       message: string;
       extracted: Record<string, string | number | null>;
       missing: ClarificationField[];
+      mode?: string;
     }
   | { type: "guardrails_warning"; agent: string; warnings: string[] }
   | { type: "complete"; elapsed_s?: number; usage?: { input_tokens?: number; output_tokens?: number } }

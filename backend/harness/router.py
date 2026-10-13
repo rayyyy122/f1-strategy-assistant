@@ -186,6 +186,10 @@ def _extract_season_round_from_history(history: list[dict]) -> tuple[int | None,
                     break
         if season is not None and round_num is not None:
             break
+    # 静态映射基于 2024/2025 赛历；2026 起赛历调整（新加坡 R18→R17 等），
+    # 新赛季或赛季未知时不猜 round，交给下游用真实赛历权威解析
+    if season is None or season > 2025:
+        round_num = None
     return season, round_num
 
 
@@ -218,4 +222,7 @@ def _extract_season_round(prompt_lower: str) -> tuple[int | None, int | None]:
             round_num = r
             break
 
+    # 同上：映射只对 2024/2025 赛历有效，新赛季交给下游赛历解析
+    if season is None or season > 2025:
+        round_num = None
     return season, round_num

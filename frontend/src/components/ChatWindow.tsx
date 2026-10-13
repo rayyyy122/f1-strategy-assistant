@@ -153,7 +153,10 @@ export function ChatWindow({ sessionId, onSessionCreated, onChatComplete }: Chat
     if (merged.team) parts.push(merged.team);
     if (merged.driver) parts.push(merged.driver);
 
-    const newPrompt = `分析 ${parts.join(" ")} 的策略`;
+    const newPrompt =
+      targetMsg?.clarification?.mode === "post_race"
+        ? `复盘 ${parts.join(" ")}`
+        : `分析 ${parts.join(" ")} 的策略`;
     sendPrompt(newPrompt);
   };
 
@@ -328,6 +331,7 @@ export function ChatWindow({ sessionId, onSessionCreated, onChatComplete }: Chat
               message: event.message,
               extracted: event.extracted,
               missing: event.missing,
+              mode: event.mode,
             },
           },
         ]);

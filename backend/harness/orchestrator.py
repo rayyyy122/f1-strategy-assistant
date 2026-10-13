@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import time
 from typing import AsyncGenerator
 
@@ -468,17 +469,101 @@ async def _run_pre_race(
     logger.info(f"轨迹已保存: {trace_id}")
 
 
+async def _resolve_race_from_prompt(season: int, prompt: str) -> dict | None:
+    """从 prompt 解析比赛 round：赛道别名优先，其次显式轮次（"第N站"/"R17"/纯数字）。
+
+    以当年真实赛历（jolpica）为准做匹配，修正 router 静态映射或 LLM 猜测
+    可能给错的 round（2026 起赛历调整，如新加坡 R18→R17）。
+    解析不到返回 None。
+    """
+    from ..tools.circuit_tools import _resolve_track_key
+    from ..tools.team_driver_tools import _lookup_race
+
+    key = _resolve_track_key(prompt)
+    if key:
+        result = await _lookup_race(season, key)
+        if result.get("found") and result.get("round"):
+            return result
+
+    m = re.search(r"第\s*(\d+)\s*站|round\s*(\d+)|\b[rR]\s*(\d+)\b", prompt)
+    digits = next((g for g in m.groups() if g), None) if m else None
+    if digits is None and prompt.strip().isdigit():
+        digits = prompt.strip()  # 反问选项回填的纯数字回复
+    if digits is not None:
+        result = await _lookup_race(season, f"round {digits}")
+        if result.get("found") and result.get("round"):
+            return result
+    return None
+
+
+async def _latest_completed_race(season: int) -> dict | None:
+    """当年赛历中日期 ≤ 今天的最近一站（解析"刚刚/上一场"这类时间指代）。"""
+    from datetime import date
+    from ..tools.team_driver_tools import _lookup_race
+
+    result = await _lookup_race(season, "")
+    schedule = result.get("schedule", [])
+    today = date.today().isoformat()
+    completed = [r for r in schedule if r.get("date") and r["date"] <= today]
+    if not completed:
+        return None
+    return max(completed, key=lambda r: r["date"])
+
+
 async def _run_post_race(intent, prompt, event_queue, memory):
     """赛后复盘——加载实际结果，对比预测。"""
-    season = intent.season
+    from .time_context import current_season
+
+    season = intent.season or current_season()
     round_num = intent.round
+    race_name = intent.race_name
     logger.info(f"_run_post_race 开始: season={season}, round={round_num}")
 
-    if season is None or round_num is None:
-        yield {"type": "error", "message": "请指定比赛。例如：'复盘2024摩纳哥大奖赛'"}
+    # 赛历权威解析（优先级最高，覆盖 router 可能给错的 round）
+    resolved = await _resolve_race_from_prompt(season, prompt)
+    if resolved:
+        if round_num is not None and round_num != resolved["round"]:
+            logger.info(
+                f"post_race: router 给 round={round_num}，赛历解析为 "
+                f"R{resolved['round']}（{resolved.get('race_name')}），采用赛历"
+            )
+        round_num = resolved["round"]
+        race_name = resolved.get("race_name") or race_name
+
+    # 同会话上一轮比赛继承（如"那实际结果如何"这类追问）
+    if round_num is None:
+        prev = memory.working.intent or {}
+        if prev.get("round") and prev.get("season") in (None, season):
+            round_num = int(prev["round"])
+            logger.info(f"post_race: 从会话上下文继承 R{round_num}")
+
+    # "刚刚/最近/上一场" → 最近一场已完赛
+    if round_num is None and any(w in prompt for w in ("刚刚", "最近", "上一场", "最新", "刚结束")):
+        recent = await _latest_completed_race(season)
+        if recent:
+            round_num = recent["round"]
+            race_name = recent.get("race_name") or race_name
+            logger.info(f"post_race: 时间指代解析为 R{round_num}（{race_name}）")
+
+    if round_num is None:
+        next_missing = await _compute_next_missing({"season": season})
+        yield {
+            "type": "clarification_needed",
+            "mode": "post_race",
+            "extracted": {"season": season},
+            "missing": [next_missing],
+            "message": "你想复盘哪一场比赛？",
+        }
         return
 
-    yield {"type": "progress", "step": "loading", "message": f"正在加载 {season} R{round_num} 实际比赛结果..."}
+    # 更新会话上下文，供后续追问继承
+    intent.season = season
+    intent.round = round_num
+    intent.race_name = race_name
+    memory.working.intent = intent.model_dump()
+
+    label = f"{season} {race_name} (R{round_num})" if race_name else f"{season} R{round_num}"
+    yield {"type": "progress", "step": "loading", "message": f"正在加载 {label} 实际比赛结果..."}
 
     # 加载实际结果
     from ..tools.strategy_tools import _load_actual_race_result
