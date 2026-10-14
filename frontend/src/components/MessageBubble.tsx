@@ -238,6 +238,7 @@ function AgentBadge({ agent }: { agent: string }) {
     tire_strategist: { icon: "🛞", label: "轮胎策略师", color: "text-emerald-400" },
     competitor_analyst: { icon: "🏎️", label: "对手分析师", color: "text-purple-400" },
     synthesis: { icon: "🎯", label: "首席策略师", color: "text-red-500" },
+    scope_guard: { icon: "🏁", label: "F1 策略助手", color: "text-red-400" },
   };
   const badge = badges[agent] || { icon: "🤖", label: agent, color: "text-zinc-400" };
   return (

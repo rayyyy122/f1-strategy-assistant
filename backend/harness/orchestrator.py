@@ -29,6 +29,16 @@ AGENT_FACTORIES = {
     "intake": create_intake,
 }
 
+_OFF_TOPIC_REPLY = """这个问题不在我的赛道上 🏁 我是 **F1 策略助手**，只能聊 F1 和赛车。
+
+可以试试这些：
+
+- **赛前策略分析** — "分析 2026 美国大奖赛的轮胎策略"
+- **赛后复盘** — "总结下刚刚的新加坡大奖赛"
+- **赛道信息** — "介绍摩纳哥赛道"
+- **F1 知识** — "什么是 DRS"、"2026 赛季现在积分榜怎样"
+"""
+
 
 async def handle_prompt(
     prompt: str,
@@ -86,6 +96,12 @@ async def handle_prompt(
         elif intent.mode == "track_info":
             async for event in _drain_with(_run_quick(prompt, event_queue, memory, force_tool=True, history=history), event_queue):
                 yield event
+
+        elif intent.mode == "off_topic":
+            # 与 F1 无关：直接短路，固定话术，不启动任何 Agent（零额外 LLM 成本）
+            yield {"type": "agent_start", "agent": "scope_guard"}
+            yield {"type": "agent_text", "agent": "scope_guard", "delta": _OFF_TOPIC_REPLY}
+            yield {"type": "agent_complete", "agent": "scope_guard"}
 
         else:
             # quick_question 或未知 mode：不强制工具
@@ -882,6 +898,8 @@ def _routing_message(intent: Intent) -> str:
             return "识别为：赛道信息查询"
         case "quick_question":
             return "识别为：F1 问答"
+        case "off_topic":
+            return "识别为：非 F1 问题"
         case "follow_up":
             return "识别为：追问"
         case _:
