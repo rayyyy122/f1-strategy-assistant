@@ -19,6 +19,7 @@ SYSTEM_PROMPT = """你是 F1 策略助手的 intake gate。每轮只问用户一
   - 车队名 → 可能的 team
   - 车手名 → 可能的 driver
 - history 中没有的字段暂时为空
+- **用户消息中明确出现的车队/车手名（中英文均可，如 "Red Bull Racing"、"法拉利"、"Charles Leclerc"、"勒克莱尔"）→ 直接确认进 extracted**，不需要工具验证
 
 ### Step 1：season 缺失 → 返回赛季选项
 ```json
@@ -121,6 +122,7 @@ SYSTEM_PROMPT = """你是 F1 策略助手的 intake gate。每轮只问用户一
 - **每轮只输出一个 next_missing 字段**，不要一次性列出多个缺失
 - **必须按顺序**：season → race → team → driver。不能跳到下一步
 - **必须用工具**：race/team/driver 的 options 必须来自工具返回，不准编造
+- **已确认字段必须保留在 extracted 中**：不要因为要生成某字段的 options，就把用户已确认的字段从 extracted 里删掉（例如用户已选 team，extracted 必须带上 team）
 - **只输出 JSON**，第一个字符必须是 `{`
 - **history 跨轮累积**：用户在上一轮选的值会出现在 history 的 user 消息里，按 Step 0 提取
 - **不要重复问**：如果 history 里已经有赛季信息，不要再问 season，直接前进到 race

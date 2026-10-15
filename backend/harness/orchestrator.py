@@ -284,6 +284,65 @@ def _driver_label_cn(driver_en: str) -> str:
     return f"{cn} ({driver_en})" if cn else driver_en
 
 
+async def _extract_fields_from_prompt(extracted: dict, prompt: str) -> dict:
+    """代码级兜底提取：intake LLM 偶发漏提用户已给的字段（尤其反问回填的规范英文名），
+    用真实名单在 prompt 里做子串匹配补回。只补缺失字段，不覆盖 LLM 已确认的值。
+    """
+    from ..tools.team_driver_tools import _list_season_teams, _lookup_team
+
+    try:
+        season = int(extracted.get("season"))
+    except (TypeError, ValueError):
+        return extracted  # 没有 season 查不了名单，保持原样
+
+    prompt_l = prompt.lower()
+
+    # round：赛道名 / "第N站" → 当年赛历权威匹配
+    if not extracted.get("round"):
+        resolved = await _resolve_race_from_prompt(season, prompt)
+        if resolved:
+            extracted["round"] = resolved["round"]
+            extracted.setdefault("race_name", resolved.get("race_name"))
+
+    # team：该赛季真实车队名单（英文名 + 中文别名）子串匹配
+    if not extracted.get("team"):
+        try:
+            teams = (await _list_season_teams(season)).get("teams", [])
+        except Exception:  # noqa: BLE001
+            teams = []
+        # 长名优先，避免 "Racing Bulls" 抢在 "Red Bull Racing" 前面命中
+        for value in sorted((t.get("value", "") for t in teams), key=len, reverse=True):
+            if not value:
+                continue
+            cn = _TEAM_CN.get(value)
+            if value.lower() in prompt_l or (cn and cn in prompt):
+                extracted["team"] = value
+                logger.info(f"Intake 兜底提取 team={value}（prompt 子串匹配）")
+                break
+
+    # driver：该车队车手名单，全名 / 姓氏 / 中文名匹配
+    if not extracted.get("driver") and extracted.get("team"):
+        try:
+            res = await _lookup_team(extracted["team"], season)
+            drivers = res.get("drivers", []) if res.get("found") else []
+        except Exception:  # noqa: BLE001
+            drivers = []
+        for name in sorted(drivers, key=len, reverse=True):
+            parts = name.split()
+            last = parts[-1] if parts else ""
+            cn = _DRIVER_CN.get(name)
+            if (
+                name.lower() in prompt_l
+                or (len(last) >= 4 and last.lower() in prompt_l)
+                or (cn and cn in prompt)
+            ):
+                extracted["driver"] = name
+                logger.info(f"Intake 兜底提取 driver={name}（prompt 子串匹配）")
+                break
+
+    return extracted
+
+
 async def _run_intake_then_pre_race(
     intent: Intent,
     prompt: str,
@@ -318,6 +377,9 @@ async def _run_intake_then_pre_race(
         extracted["season"] = intent.season
     if not extracted.get("round") and intent.round:
         extracted["round"] = intent.round
+
+    # 代码级兜底提取：用户反问回填的选择就在 prompt 里，LLM 可能漏提
+    extracted = await _extract_fields_from_prompt(extracted, prompt)
 
     # 代码权威判定 — 不依赖 LLM 的 ready/missing 字段
     next_missing = await _compute_next_missing(extracted)
