@@ -19,7 +19,7 @@ export const MessageBubble = memo(function MessageBubble({
   sessionId?: string;
   onClarificationSubmit?: (msgId: string, filled: Record<string, string>) => void;
 }) {
-  const { id, role, agent, content, thinking, isStreaming, isIntermediate, dataCard, strategy, comparison, clarification, guardrailsWarnings, toolActivity, feedback } = message;
+  const { id, role, agent, agentLabel, content, thinking, isStreaming, isIntermediate, dataCard, strategy, comparison, clarification, guardrailsWarnings, toolActivity, feedback } = message;
   const [localFeedback, setLocalFeedback] = useState(feedback?.type || null);
 
   const handleFeedback = async (type: "like" | "dislike") => {
@@ -118,7 +118,7 @@ export const MessageBubble = memo(function MessageBubble({
           <div className="bg-zinc-900 border border-zinc-800 rounded-2xl rounded-bl-md px-4 py-2.5 relative break-words overflow-hidden">
             {agent && (
               <div className="text-xs text-zinc-500 mb-1 font-medium flex items-center gap-1">
-                <AgentBadge agent={agent} />
+                <AgentBadge agent={agent} label={agentLabel} />
                 {isStreaming && <span className="text-red-500 ml-1 animate-pulse">...</span>}
                 {isIntermediate && !isStreaming && (
                   <span className="text-[10px] text-zinc-600 ml-1">· 中间分析</span>
@@ -231,7 +231,7 @@ function truncateJSON(value: unknown, maxLen: number = 200): string {
   return s;
 }
 
-function AgentBadge({ agent }: { agent: string }) {
+function AgentBadge({ agent, label }: { agent: string; label?: string }) {
   const badges: Record<string, { icon: string; label: string; color: string }> = {
     intake: { icon: "📋", label: "信息校验员", color: "text-amber-400" },
     race_context: { icon: "🏁", label: "赛道分析师", color: "text-zinc-300" },
@@ -243,7 +243,7 @@ function AgentBadge({ agent }: { agent: string }) {
   const badge = badges[agent] || { icon: "🤖", label: agent, color: "text-zinc-400" };
   return (
     <span className={badge.color}>
-      {badge.icon} {badge.label}
+      {badge.icon} {label || badge.label}
     </span>
   );
 }

@@ -872,7 +872,11 @@ async def _run_quick(prompt, event_queue, memory, force_tool: bool = False, hist
                    False 表示通用 F1 知识问答（quick_question），Agent 自由决定是否调工具。
         history: 前端传入的最近 N 轮对话历史，用于保持上下文（如"帮我搜索"指代上一轮话题）。
     """
-    yield {"type": "agent_start", "agent": "race_context"}
+    # quick_question 不是"赛道分析"，给前端一个展示用 label 覆盖徽章文案（track_info 保持默认）
+    start_event: dict = {"type": "agent_start", "agent": "race_context"}
+    if not force_tool:
+        start_event["label"] = "F1 专家"
+    yield start_event
     agent = AGENT_FACTORIES["race_context"]()
     if force_tool:
         task = (

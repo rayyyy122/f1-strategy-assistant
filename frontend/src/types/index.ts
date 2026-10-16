@@ -79,7 +79,7 @@ export type SSEEvent =
   | { type: "routing"; mode: string; message: string }
   | { type: "progress"; step: string; message: string }
   | { type: "data_card"; card_type: string; data: unknown }
-  | { type: "agent_start"; agent: string; intermediate?: boolean }
+  | { type: "agent_start"; agent: string; intermediate?: boolean; label?: string }
   | { type: "agent_thinking"; agent: string; delta: string }
   | { type: "agent_text"; agent: string; delta: string }
   | { type: "agent_tool_call"; agent: string; tool: string; params: unknown }
@@ -129,6 +129,7 @@ export interface ChatMessage {
   id: string;
   role: MessageRole;
   agent?: string;
+  agentLabel?: string;
   content: string;
   thinking?: string;
   isStreaming?: boolean;

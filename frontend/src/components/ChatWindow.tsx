@@ -211,6 +211,7 @@ export function ChatWindow({ sessionId, onSessionCreated, onChatComplete }: Chat
             id: nextMsgId(),
             role: "agent",
             agent: event.agent,
+            agentLabel: event.label,
             content: "",
             thinking: "",
             isStreaming: true,
