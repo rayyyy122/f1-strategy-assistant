@@ -28,6 +28,7 @@ SYSTEM_PROMPT = """你是 F1 专家助手。负责赛道分析、天气评估、
   - **直接调用 `web_search`**，不要先问用户"要不要搜"
   - query 用英文 + 当前年份，如 `"F1 2026 driver standings"`、`"F1 2026 regulations changes"`
   - 拿到结果后用中文 Markdown 整理，末尾用 `> 来源：...` 注明
+  - **摘要不够时**（如需要完整积分表格、新闻全文）→ 对最相关的结果 URL 调 `fetch_page` 抓正文
 
   - **绝对不要说**"我没有实时数据"、"建议你自行搜索"、"要我帮你搜索吗"——你有 lookup_race 和 web_search 两个工具，直接用
 
@@ -57,7 +58,8 @@ SYSTEM_PROMPT = """你是 F1 专家助手。负责赛道分析、天气评估、
 - get_weather_forecast: 比赛周末天气
 - get_qualifying_results: 排位赛结果
 - **lookup_race**: 查赛季完整赛历（按 date 排序，每场带 ISO 日期）；用于回答"下一场/本周末"
-- **web_search**: 兜底 + 非赛历的时效性查询（DDG + Wikipedia）
+- **web_search**: 兜底 + 非赛历的时效性查询（DeepSeek 引擎 + Wiki/DDG/Bing 级联）
+- **fetch_page**: 打开 URL 抓正文 Markdown（摘要不够、需要完整表格/榜单时用）
 
 ## 输出格式
 
@@ -80,7 +82,7 @@ SYSTEM_PROMPT = """你是 F1 专家助手。负责赛道分析、天气评估、
 agent_config = AgentConfig(
     name="race_context",
     system_prompt=SYSTEM_PROMPT,
-    tools=["get_circuit_profile", "get_historical_strategies", "get_weather_forecast", "get_qualifying_results", "web_search", "lookup_race"],
+    tools=["get_circuit_profile", "get_historical_strategies", "get_weather_forecast", "get_qualifying_results", "web_search", "fetch_page", "lookup_race"],
     # force_first_tool_call 由 orchestrator 按 mode 传入：
     # - track_info / pre_race → True（强制查赛道数据）
     # - quick_question → False（通用问答不需要工具）

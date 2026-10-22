@@ -28,3 +28,6 @@ LOG_DIR = BASE_DIR / "logs"
 
 # Frontend access key (防止 /api 被公网蹭用；留空则不校验)
 FRONTEND_API_KEY = os.getenv("FRONTEND_API_KEY") or None
+
+# Brave Search API（可选；配置后 web_search 优先走 Brave，未配置走免费多源级联）
+BRAVE_SEARCH_API_KEY = os.getenv("BRAVE_SEARCH_API_KEY") or None
