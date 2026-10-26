@@ -52,7 +52,11 @@ if [ ! -f "$REPO_DIR/.env" ]; then
   warn ".env 不存在，创建模板（请编辑填入真实 key，然后 systemctl restart $SERVICE_NAME）"
   cat > "$REPO_DIR/.env" <<'EOF'
 DEEPSEEK_API_KEY=
+DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+DEEPSEEK_MODEL=deepseek-chat
+BRAVE_SEARCH_API_KEY=
 FRONTEND_API_KEY=o1c2iHuutraOhIHT5DyOMJaA39hTR6gG
+LOG_LEVEL=INFO
 EOF
   chmod 600 "$REPO_DIR/.env"
 fi
