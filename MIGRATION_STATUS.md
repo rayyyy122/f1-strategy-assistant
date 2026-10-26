@@ -1,171 +1,120 @@
-# F1 策略助手 — 后端迁移状态清单
+# F1 策略助手 — 迁移完成状态
 
-> 迁移目标：把生产后端从当前 Mac 迁到另一台常驻开机的 MacBook，让当前 Mac 可以休眠/关机。
-> 创建时间：2026-10-27
+> 迁移方向：后端从另一台 MacBook 迁回**当前 Mac**（`/Users/ray/Desktop/f1-strategy-assistant`）。
+> 完成时间：2026-10-27
 
 ---
 
-## 当前架构状态
+## 最终架构
 
 | 组件 | 位置 | 状态 |
 |---|---|---|
-| 前端 | Cloudflare Pages | 在线，无需迁移 |
-| 后端 API | 当前 Mac `localhost:8000` | 运行中，待切换 |
-| cloudflared 隧道 | 当前 Mac `com.cloudflare.cloudflared` | 运行中，待停止 |
-| 公网域名 | `api.fi-strategy-assistant-website.website` | 仍指向当前 Mac |
+| 前端 | Cloudflare Pages | 在线 |
+| 后端 API | **当前 Mac** `127.0.0.1:8000` | 已运行（用户级 LaunchAgent） |
+| cloudflared 隧道 | **当前 Mac** `com.cloudflare.cloudflared` | 已运行 |
+| 公网域名 | `api.fi-strategy-assistant-website.website` | 指向当前 Mac |
+| 另一台 MacBook | 后端 + cloudflared | 待停止 |
 
 ---
 
-## 已完成（当前 Mac）
+## 当前 Mac 服务配置
 
-- [x] 代码已 push 到 GitHub（最新 `2b77f7e`）
-- [x] Kimi Code 项目 skill 已创建并 push（`.kimi-code/skills/f1-strategy-assistant/SKILL.md`）
-- [x] `.env` 已通过 SCP 复制到另一台 MacBook
-- [x] 另一台 MacBook 已 `git clone` 项目
+### 后端服务
+
+- **类型**：用户级 `~/Library/LaunchAgents/f1-backend.plist`
+- **运行用户**：`ray`
+- **Python**：`~/.venvs/f1-strategy-assistant/bin/python`（Python 3.13）
+- **启动命令**：
+  ```bash
+  /Users/ray/.venvs/f1-strategy-assistant/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+  ```
+- **工作目录**：`/Users/ray/Desktop/f1-strategy-assistant`
+- **环境变量**：`PYTHONPATH=/Users/ray/Desktop/f1-strategy-assistant`
+- **日志**：
+  - `~/Library/Logs/f1-backend.log`
+  - `~/Library/Logs/f1-backend_error.log`
+
+### cloudflared
+
+- 已通过 `sudo cloudflared service install <TOKEN>` 注册为系统服务
+- 使用同一 tunnel `f1-assistant`
 
 ---
 
-## 剩余步骤（另一台 MacBook）
+## 常用运维命令
 
-### 1. 同步最新代码
-
-```bash
-cd ~/f1-strategy-assistant
-git pull origin main
-```
-
-如果 HTTPS 失败：
+### 后端
 
 ```bash
-# 在当前 Mac 上执行
-scp -r /Users/taodingrui/Desktop/Agent/.kimi-code \
-  <另一台Mac用户名>@<另一台Mac_IP>:~/f1-strategy-assistant/
-```
+# 查看状态
+launchctl list | grep f1-backend
 
-### 2. 安装 Python 依赖
+# 重启后端
+launchctl unload ~/Library/LaunchAgents/f1-backend.plist
+launchctl load -w ~/Library/LaunchAgents/f1-backend.plist
+launchctl start f1-backend
 
-```bash
-cd ~/f1-strategy-assistant
-python3 -m venv venv
-source venv/bin/activate
-pip install --upgrade pip
-pip install -r backend/requirements.txt
-```
+# 查看日志
+tail -f ~/Library/Logs/f1-backend_error.log
 
-### 3. 手动测试后端
-
-```bash
-source venv/bin/activate
-python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
-```
-
-新终端验证：
-
-```bash
+# 本地健康检查
 curl http://127.0.0.1:8000/api/health
 ```
 
-正常后 `Ctrl+C` 停止手动进程。
-
-### 4. 注册后端为 launchd 服务
-
-创建启动脚本：
+### cloudflared
 
 ```bash
-cat > ~/f1-strategy-assistant/run_service.sh <<'EOF'
-#!/bin/bash
-cd ~/f1-strategy-assistant
-source venv/bin/activate
-exec uvicorn backend.main:app --host 127.0.0.1 --port 8000
-EOF
-chmod +x ~/f1-strategy-assistant/run_service.sh
+# 停止
+sudo launchctl stop com.cloudflare.cloudflared
+
+# 启动
+sudo launchctl start com.cloudflare.cloudflared
+
+# 卸载重装
+sudo cloudflared service uninstall
+sudo cloudflared service install <TOKEN>
 ```
 
-创建服务（替换 `<用户名>`）：
-
-```bash
-sudo tee /Library/LaunchDaemons/f1-backend.plist <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>f1-backend</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/Users/<用户名>/f1-strategy-assistant/run_service.sh</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/Users/<用户名>/f1-strategy-assistant/logs/backend_service.log</string>
-    <key>StandardErrorPath</key>
-    <string>/Users/<用户名>/f1-strategy-assistant/logs/backend_service_error.log</string>
-</dict>
-</plist>
-EOF
-
-sudo launchctl load -w /Library/LaunchDaemons/f1-backend.plist
-```
-
-### 5. 安装并启动 cloudflared
-
-```bash
-brew install cloudflared
-sudo cloudflared service install <CLOUDFLARED_TOKEN>
-```
-
-Token 来源：Cloudflare Dashboard → Zero Trust → Networks → Tunnels → f1-assistant → Configure → Token
-
-### 6. 验证公网
+### 公网验证
 
 ```bash
 curl https://api.fi-strategy-assistant-website.website/api/health
 ```
 
-### 7. 切换：停止当前 Mac 的隧道
+---
 
-在**当前 Mac** 上执行：
+## 代码更新流程
+
+在当前 Mac 改完代码后：
 
 ```bash
-sudo launchctl unload /Library/LaunchDaemons/com.cloudflare.cloudflared.plist
-sudo launchctl remove com.cloudflare.cloudflared
+cd /Users/ray/Desktop/f1-strategy-assistant
+
+# 如果依赖有变化
+~/.venvs/f1-strategy-assistant/bin/pip install -r backend/requirements.txt
+
+# 重启服务
+launchctl unload ~/Library/LaunchAgents/f1-backend.plist
+launchctl load -w ~/Library/LaunchAgents/f1-backend.plist
+launchctl start f1-backend
 ```
+
+如果改了前端，push 到 main 后 Cloudflare Pages 会自动部署。
 
 ---
 
-## 切换后验证清单
+## 注意事项
 
-- [ ] 新机器 `curl http://127.0.0.1:8000/api/health` 正常
-- [ ] 公网 `curl https://api.fi-strategy-assistant-website.website/api/health` 正常
-- [ ] 网站前端能正常对话
-- [ ] 当前 Mac 休眠/关机后，网站仍可用
-
----
-
-## 回滚方案
-
-如果新机器出问题，重新在当前 Mac 启动隧道：
-
-```bash
-sudo cloudflared service install <CLOUDFLARED_TOKEN>
-```
-
-流量会重新指回当前 Mac。
+- **不要用 `/Library/LaunchDaemons`**：root 运行的系统服务对 `/Users/ray/Desktop` 下的文件有 TCC/SIP 访问限制，会导致 `PermissionError: Operation not permitted`。
+- **服务专用 venv 在 `~/.venvs/`**：避开 Desktop 目录的权限/ provenance 属性问题。
+- **项目内 `./venv/` 仍可用于本地开发**（已重建为 Python 3.13），`./run_backend.sh` 可正常使用。
+- `backend/data/` 已加入 git；`.gitignore` 已修正为 `/data/`，不会再误忽略。
+- 切换前需确保另一台 MacBook 的后端和 cloudflared 已停止，避免 Cloudflare 在多个 connector 之间随机路由。
 
 ---
 
-## 后续代码更新
+## 待完成
 
-以后在当前 Mac 改完代码 push 后，在新机器上：
-
-```bash
-cd ~/f1-strategy-assistant
-git pull origin main
-source venv/bin/activate
-pip install -r backend/requirements.txt  # 如果依赖有变化
-sudo launchctl stop f1-backend
-sudo launchctl start f1-backend
-```
+- [ ] 停止另一台 MacBook 的后端和 cloudflared
+- [ ] 停止后再次验证公网健康检查仍正常
+- [ ] 可选：删除另一台 MacBook 上的项目副本

@@ -11,8 +11,8 @@ dist/
 # Logs
 logs/
 
-# Traces & data
-data/
+# Traces & data (root only, not backend/data/)
+/data/
 
 # Environment
 .env
